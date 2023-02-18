@@ -10,22 +10,31 @@ import qualified Data.Map as Map
 main :: IO ()
 main = do
   args <- getArgs
-  let Config {exampleName} = parseArgs args
-  let q = maybe (error ("no example: "++ exampleName)) id $ Map.lookup exampleName examples
-  res <- evalQI q
-  print res
-  pure ()
+  case parseArgs args of
+    Config {exampleName} -> do
+      let q = getExample exampleName
+      res <- evalQI q
+      putStrLn (pretty res)
+      pure ()
+    Dev -> do
+      let q = getExample "johns"
+      let a = compile q
+      runAction a
 
-data Config = Config { exampleName :: String }
+  where
+    getExample :: String -> Query
+    getExample x = maybe (error ("no example: "++ x)) id $ Map.lookup x examples
+
+data Config = Config { exampleName :: String } | Dev
 
 parseArgs :: [String] -> Config
 parseArgs args = do
   case args of
-    [] -> Config { exampleName = default_exampleName}
+    [] -> Dev --Config { exampleName = default_exampleName}
     [exampleName] -> Config { exampleName }
     _ -> error (show ("args",args))
   where
-    default_exampleName = "commonNameAcrossParties"
+    --default_exampleName = "commonNameAcrossParties"
 
 ----------------------------------------------------------------------
 -- example queries
@@ -117,6 +126,49 @@ data Pred
 
 data Ref = RefValue Value | RefField ColName
   deriving Show
+
+----------------------------------------------------------------------
+-- compiling queries
+
+compile :: Query -> Action
+compile q = compile q $ \r -> A_PrintRecord r
+  where
+    compile :: Query -> (Record -> Action) -> Action
+    compile q k = case q of
+      ScanFile filename -> do
+        A_ScanFile filename k
+
+      ProjectAs inp out sub -> do
+        compile sub $ \r -> k (renameR inp out r)
+
+      Filter pred sub -> do
+        compile sub $ \r -> if evalPred r pred then k r else A_Sequence []
+
+      Join{} -> undefined -- sub1 sub2 -> do
+      HashJoin{} -> undefined -- cols1 cols2 sub1 sub2 -> do
+      GroupBy{} -> undefined -- cols tag sub -> do
+      ExpandAgg{} -> undefined -- aggCol sub -> do
+      CountAgg{} -> undefined -- aggCol countCol sub -> do
+
+
+data Action
+  = A_Sequence [Action]
+  | A_ScanFile FilePath (Record -> Action)
+  | A_PrintRecord Record
+  --deriving Show
+
+
+runAction :: Action -> IO ()
+runAction = \case
+  A_Sequence as -> do
+    mapM_ runAction as
+
+  A_ScanFile filename f -> do
+    Table rs <- loadTableFromCSV filename
+    runAction (A_Sequence (map f rs))
+
+  A_PrintRecord r -> do
+    putStrLn (prettyR r)
 
 ----------------------------------------------------------------------
 -- evaluating queries
@@ -287,6 +339,10 @@ pretty tab@(Table rs) = case rs of
        then error (show ( "pretty",tab)) else do
        intercalate "," sc1 ++ "\n"
          ++ unlines [ intercalate "," (map show fields) | Record {fields} <- r:rs ]
+
+prettyR :: Record -> String
+prettyR Record{fields} =
+  intercalate "," (map show fields)
 
 ----------------------------------------------------------------------
 -- parsing tables from CVS
