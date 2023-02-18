@@ -14,7 +14,7 @@ main = do
     Config {exampleName} -> do
       let q = getExample exampleName
       res <- evalQI q
-      putStrLn (pretty res)
+      putStr (pretty res)
       pure ()
     Dev -> do
       let q = getExample "johns"
