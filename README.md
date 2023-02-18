@@ -14,6 +14,7 @@ Explore query compilation via staged interpretation.
 - example data: uk mps
 - simple recursive evaluation
 - slow (quadratic) join
+- hash-join (kinda - uses log-maps, but avoids being quadratic which is what is most important)
 
 ## todo
 - push-based evaluation

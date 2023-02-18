@@ -1,9 +1,12 @@
 
-examples = johns sameSurname
+examples = johns sameSurname sameSurnameH
 
 outputs = $(patsubst %,_out/%.out,$(examples))
 
-top: $(outputs)
+top: $(outputs) diff
 
-_out/%.out: Makefile src/*.hs
+diff:
+	git diff _out
+
+_out/%.out: Makefile src/*.hs data/mps.csv
 	stack run -- $(patsubst _out/%.out,%,$@) > $@ || rm $@

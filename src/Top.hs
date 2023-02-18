@@ -24,7 +24,7 @@ parseArgs args = do
     [exampleName] -> Config { exampleName }
     _ -> error (show ("args",args))
   where
-    default_exampleName = "sameSurname"
+    default_exampleName = "sameSurnameH"
 
 ----------------------------------------------------------------------
 -- example queries
@@ -36,6 +36,7 @@ examples = Map.fromList
       (Filter (PredEq (RefValue (VString "John")) (RefField "Forename"))
        (ScanFile "data/mps.csv")))
 
+  -- example of slow quadratic join
   , ("sameSurname",
       project ["R.Surname","R.Forename","S.Forename","R.Party","S.Party"]
       (Filter
@@ -43,6 +44,15 @@ examples = Map.fromList
         (PredEq (RefField "R.Surname") (RefField "S.Surname"))
         (PredNe (RefField "R.Forename") (RefField "S.Forename")))
         (Join
+          (projectPrefix "R" ["Forename","Surname","Party"] (ScanFile "data/mps.csv"))
+          (projectPrefix "S" ["Forename","Surname","Party"] (ScanFile "data/mps.csv")))))
+
+  -- same example using hash join
+  , ("sameSurnameH",
+      project ["R.Surname","R.Forename","S.Forename","R.Party","S.Party"]
+      (Filter
+       (PredNe (RefField "R.Forename") (RefField "S.Forename"))
+        (HashJoin ["R.Surname"] ["S.Surname"]
           (projectPrefix "R" ["Forename","Surname","Party"] (ScanFile "data/mps.csv"))
           (projectPrefix "S" ["Forename","Surname","Party"] (ScanFile "data/mps.csv")))))
   ]
@@ -59,6 +69,7 @@ data Query
   | ProjectAs Schema Schema Query
   | Filter Pred Query
   | Join Query Query
+  | HashJoin Schema Schema Query Query
   deriving Show
 
 data Pred = PredEq Ref Ref | PredNe Ref Ref | PredAnd Pred Pred
@@ -86,6 +97,21 @@ evalQI = eval
         Table rs1 <- eval sub1
         Table rs2 <- eval sub2
         pure $ Table [ combineR r1 r2 | r1 <- rs1, r2 <- rs2 ]
+      HashJoin cols1 cols2 sub1 sub2 -> do
+        Table rs1 <- eval sub1
+        Table rs2 <- eval sub2
+        let m1 :: Map [Value] [Record] =
+              Map.fromListWith (++)
+              [ (key, [r1])
+              | r1 <- rs1
+              , let key = map (selectR r1) cols1
+              ]
+        pure $ Table $
+          [ combineR r1 r2
+          | r2 <- rs2
+          , let key = map (selectR r2) cols2
+          , r1 <- maybe [] id $ Map.lookup key m1
+          ]
 
 evalPred :: Record -> Pred -> Bool
 evalPred r = \case
@@ -118,7 +144,7 @@ type Schema = [ColName]
 type ColName = String
 
 data Value = VString String
-  deriving Eq
+  deriving (Eq,Ord)
 
 ----------------------------------------------------------------------
 -- displaying  values
