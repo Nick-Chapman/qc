@@ -1,22 +1,42 @@
 module Top (main) where
 
 import Data.List (intercalate)
+import Data.Map (Map)
 import Par4 (parse,separated,terminated,alts,many,sat,nl,lit)
+import System.Environment (getArgs)
+import qualified Data.Map as Map
 
 main :: IO ()
 main = do
-  putStrLn "** explore query compilation **"
-  let project sc = ProjectAs sc sc
-  let projectPrefix tag sc = ProjectAs sc [ tag++"."++col | col <- sc ]
+  args <- getArgs
+  let Config {exampleName} = parseArgs args
+  let q = maybe (error ("no example: "++ exampleName)) id $ Map.lookup exampleName examples
+  res <- evalQI q
+  print res
+  pure ()
 
-  let
-    _q =
+data Config = Config { exampleName :: String }
+
+parseArgs :: [String] -> Config
+parseArgs args = do
+  case args of
+    [] -> Config { exampleName = default_exampleName}
+    [exampleName] -> Config { exampleName }
+    _ -> error (show ("args",args))
+  where
+    default_exampleName = "sameSurname"
+
+----------------------------------------------------------------------
+-- example queries
+
+examples :: Map String Query
+examples = Map.fromList
+  [ ("johns",
       project ["Forename","Surname","Party"]
       (Filter (PredEq (RefValue (VString "John")) (RefField "Forename"))
-       (ScanFile "data/mps.csv"))
+       (ScanFile "data/mps.csv")))
 
-  let
-    q =
+  , ("sameSurname",
       project ["R.Surname","R.Forename","S.Forename","R.Party","S.Party"]
       (Filter
        (PredAnd
@@ -24,11 +44,12 @@ main = do
         (PredNe (RefField "R.Forename") (RefField "S.Forename")))
         (Join
           (projectPrefix "R" ["Forename","Surname","Party"] (ScanFile "data/mps.csv"))
-          (projectPrefix "S" ["Forename","Surname","Party"] (ScanFile "data/mps.csv"))))
+          (projectPrefix "S" ["Forename","Surname","Party"] (ScanFile "data/mps.csv")))))
+  ]
 
-  res <- evalQI q
-  print res
-  pure ()
+  where
+    project sc = ProjectAs sc sc
+    projectPrefix tag sc = ProjectAs sc [ tag++"."++col | col <- sc ]
 
 ----------------------------------------------------------------------
 -- query language
