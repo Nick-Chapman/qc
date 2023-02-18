@@ -114,7 +114,6 @@ data Query
   | ProjectAs Schema Schema Query
   | Filter Pred Query
   | Join Query Query
---  | JoinM Query Query -- compile to materializing version
   | HashJoin Schema Schema Query Query
   | GroupBy Schema ColName Query
   | ExpandAgg ColName Query
@@ -166,13 +165,7 @@ compile q = compile q $ \r -> A_Emit r
         compile sub1 $ \r1 -> do
           compile sub2 $ \r2 -> do
             k (combineR r1 r2)
-{-
-      JoinM sub1 sub2 -> do
-        A_Materialize (compile sub2 $ A_Emit) $ \tab -> do
-          compile sub1 $ \r1 -> do
-            A_ScanTable tab $ \r2 -> do
-              k (combineR r1 r2)
--}
+
       HashJoin{} -> undefined -- cols1 cols2 sub1 sub2 -> do
       GroupBy{} -> undefined -- cols tag sub -> do
       ExpandAgg{} -> undefined -- aggCol sub -> do
@@ -185,7 +178,6 @@ data Action
 --  | A_Materialize Action (Table -> Action)
 --  | A_ScanTable Table (Record -> Action)
 
-
 runActionIO :: Action -> IO ()
 runActionIO a =
   runI (runActionI a)
@@ -197,71 +189,11 @@ runActionI a = loop a I_Done
     loop a k = case a of
       A_Sequence [] -> k
       A_Sequence (a:as) -> loop a (loop (A_Sequence as) k)
-
       A_ScanFile filename f -> do
         I_LoadTable filename $ \(Table rs) ->
           loop (A_Sequence (map f rs)) k
-
       A_Emit r -> do
         I_Print (prettyR r) k
-{-
-      A_Materialize{} ->
-        undefined
-
-      A_ScanTable{} ->
-        undefined
--}
-
-
-{-
-old_runActionIO :: Action -> IO ()
-old_runActionIO a = do
-  t <- runActionAsTabIO a
-  putStr (prettyT t)
-
-runActionAsTabIO :: Action -> IO Table
-runActionAsTabIO a = Table <$> (run a)
-  where
-    run :: Action -> IO [Record]
-    run = \case
-      A_Sequence as -> do
-        concat <$> mapM run as
-
-      A_ScanFile filename f -> do
-        Table rs <- loadTableFromCSV filename
-        concat <$> mapM (run . f) rs
-
-      A_Emit r -> do
-        pure [r]
-{-
-      A_Materialize a f -> do
-        rs <- run a
-        run (f (Table rs))
-
-      A_ScanTable (Table rs) f ->
-        concat <$> mapM (run . f) rs
--}
--}
-
-{-
-_runAction' :: Action -> IO ()
-_runAction' = \case
-  A_Sequence as -> do
-    mapM_ _runAction' as
-
-  A_ScanFile filename f -> do
-    Table rs <- loadTableFromCSV filename
-    _runAction' (A_Sequence (map f rs))
-
-  A_Emit r -> do
-    putStrLn (prettyR r)
-
-  A_Materialize{} ->
-    undefined
-
-  A_ScanTable{} ->
-    undefined
--}
 
 ----------------------------------------------------------------------
 -- Interaction (instead of IO)
@@ -307,10 +239,6 @@ evalQI = eval
         t1 <- eval sub1
         t2 <- eval sub2
         pure (crossProductT t1 t2)
-      {-JoinM sub1 sub2 -> do
-        t1 <- eval sub1
-        t2 <- eval sub2
-        pure (crossProductT t1 t2)-}
       HashJoin cols1 cols2 sub1 sub2 -> do
         t1 <- eval sub1
         t2 <- eval sub2
