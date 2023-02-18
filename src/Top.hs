@@ -4,6 +4,7 @@ import Data.List (intercalate)
 import Data.Map (Map)
 import Par4 (parse,separated,terminated,alts,many,sat,nl,lit)
 import System.Environment (getArgs)
+import Text.Printf (printf)
 import qualified Data.Map as Map
 
 main :: IO ()
@@ -24,7 +25,7 @@ parseArgs args = do
     [exampleName] -> Config { exampleName }
     _ -> error (show ("args",args))
   where
-    default_exampleName = "sameSurnameH"
+    default_exampleName = "johnsByParty"
 
 ----------------------------------------------------------------------
 -- example queries
@@ -35,6 +36,14 @@ examples = Map.fromList
       project ["Forename","Surname","Party"]
       (Filter (PredEq (RefValue (VString "John")) (RefField "Forename"))
        (ScanFile "data/mps.csv")))
+
+  , ("johnsByParty",
+      project ["Party","G.Surname"]
+      (ExpandAgg "G"
+       (GroupBy ["Party"] "G"
+        (project ["Forename","Surname","Party"]
+         (Filter (PredEq (RefValue (VString "John")) (RefField "Forename"))
+          (ScanFile "data/mps.csv"))))))
 
   -- example of slow quadratic join
   , ("sameSurname",
@@ -70,6 +79,8 @@ data Query
   | Filter Pred Query
   | Join Query Query
   | HashJoin Schema Schema Query Query
+  | GroupBy Schema ColName Query
+  | ExpandAgg ColName Query
   deriving Show
 
 data Pred = PredEq Ref Ref | PredNe Ref Ref | PredAnd Pred Pred
@@ -86,21 +97,28 @@ evalQI = eval
   where
     eval :: Query -> IO Table
     eval = \case
-      ScanFile filename -> loadTableFromCSV filename
+      ScanFile filename -> do
+        loadTableFromCSV filename
       ProjectAs inp out sub -> do
-        Table rs <- eval sub
-        pure $ Table [ Record { fields = map (selectR r) inp, schema=out } | r <- rs ]
+        t <- eval sub
+        pure (renameT inp out t)
       Filter pred sub -> do
-        Table rs <- eval sub
-        pure $ Table [ r | r <- rs, evalPred r pred ]
+        t <- eval sub
+        pure (filterT (\r -> evalPred r pred) t)
       Join sub1 sub2 -> do
-        Table rs1 <- eval sub1
-        Table rs2 <- eval sub2
-        pure $ Table [ combineR r1 r2 | r1 <- rs1, r2 <- rs2 ]
+        t1 <- eval sub1
+        t2 <- eval sub2
+        pure (crossProductT t1 t2)
       HashJoin cols1 cols2 sub1 sub2 -> do
         t1 <- eval sub1
         t2 <- eval sub2
-        pure (combineTables cols1 cols2 t1 t2)
+        pure (hashJoinTables cols1 cols2 t1 t2)
+      GroupBy cols tag sub -> do
+        t <- eval sub
+        pure (groupBy cols tag t)
+      ExpandAgg aggCol sub -> do
+        t <- eval sub
+        pure (expandAgg aggCol t)
 
 evalPred :: Record -> Pred -> Bool
 evalPred r = \case
@@ -113,16 +131,15 @@ evalRef r = \case
   RefValue v -> v
   RefField c -> selectR r c
 
-selectR :: Record -> ColName -> Value
-selectR Record{fields,schema} col = the who [ v | (c,v) <- zip schema fields, c==col ]
-  where who = (show ("select",col,schema))
+----------------------------------------------------------------------
+-- table operations
 
-combineR :: Record -> Record -> Record
-combineR Record{fields=f1,schema=s1} Record{fields=f2,schema=s2} =
-  Record{fields=f1++f2, schema=s1++s2}
+crossProductT :: Table -> Table -> Table
+crossProductT (Table rs1) (Table rs2) =
+  Table [ combineR r1 r2 | r1 <- rs1, r2 <- rs2 ]
 
-combineTables :: Schema -> Schema -> Table -> Table -> Table
-combineTables cols1 cols2 (Table rs1) (Table rs2) = do
+hashJoinTables :: Schema -> Schema -> Table -> Table -> Table
+hashJoinTables cols1 cols2 (Table rs1) (Table rs2) = do
   let m1 :: Map [Value] [Record] =
         Map.fromListWith (++)
         [ (key, [r1])
@@ -136,18 +153,67 @@ combineTables cols1 cols2 (Table rs1) (Table rs2) = do
             , r1 <- maybe [] id $ Map.lookup key m1
     ]
 
+filterT :: (Record -> Bool) -> Table -> Table
+filterT pred (Table rs) =
+  Table [ r | r <- rs, pred r ]
+
+renameT :: Schema -> Schema -> Table -> Table
+renameT inp out (Table rs) =
+  Table [ renameR inp out r | r <- rs ]
+
+groupBy :: Schema -> ColName -> Table -> Table
+groupBy cols tag (Table rs) = do
+  let _m1 :: Map [Value] [Record] =
+        Map.fromListWith (++)
+        [ (key, [r])
+        | r <- rs
+        , let key = map (selectR r) cols
+        ]
+  mkTable (cols ++ [tag])
+    [ k ++ [VAgg (Table rs)] | (k,rs) <- Map.toList _m1 ]
+
+expandAgg :: ColName -> Table -> Table
+expandAgg aggCol (Table rs1) = do
+  Table $
+    [ combineR r1 (prefixR aggCol r2)
+    | r1 <- rs1
+    , let VAgg (Table rs2) = selectR r1 aggCol
+    , r2 <- rs2
+    ]
+
+----------------------------------------------------------------------
+-- record operations
+
+prefixR :: String -> Record -> Record
+prefixR tag r@Record{schema} =
+  renameR schema (map (\x -> tag++"."++x) schema) r
+
+renameR :: Schema -> Schema -> Record -> Record
+renameR inp out r =
+  Record { fields = map (selectR r) inp, schema=out }
+
+selectR :: Record -> ColName -> Value
+selectR Record{fields,schema} col =
+  the who [ v | (c,v) <- zip schema fields, c==col ]
+  where who = (show ("select",col,schema))
+
+combineR :: Record -> Record -> Record
+combineR Record{fields=f1,schema=s1} Record{fields=f2,schema=s2} =
+  Record{fields=f1++f2, schema=s1++s2}
+
 ----------------------------------------------------------------------
 -- values
 
 data Table = Table [Record]
+  deriving (Eq,Ord)
 
 data Record = Record { fields :: [Value], schema :: Schema }
-  deriving Show
+  deriving (Eq,Ord,Show)
 
 type Schema = [ColName]
 type ColName = String
 
-data Value = VString String
+data Value = VString String | VAgg Table
   deriving (Eq,Ord)
 
 ----------------------------------------------------------------------
@@ -159,6 +225,8 @@ instance Show Table where
 instance Show Value where
   show = \case
     VString s -> show s
+    --VAgg t -> show t
+    VAgg (Table rs) -> printf "[table:size=%d]" (length rs)
 
 pretty :: Table -> String
 pretty tab@(Table rs) = case rs of

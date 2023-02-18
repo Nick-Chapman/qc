@@ -15,10 +15,10 @@ Explore query compilation via staged interpretation.
 - simple recursive evaluation
 - slow (quadratic) join
 - hash-join (kinda - uses log-maps, but avoids being quadratic which is what is most important)
+- group-by (separate aggregate & expand)
 
 ## todo
 - push-based evaluation
-- query plan operators: group-by, hash-join
 - simple parser for SQL -> query plan
 - staged interpreter; generated code, C?
 - types: string and ints
