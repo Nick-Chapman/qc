@@ -17,11 +17,12 @@ Explore query compilation via staged interpretation.
 - hash-join (kinda - uses log-maps, but avoids being quadratic which is what is most important)
 - group-by (separate aggregate & expand)
 - push-based evaluation (step to compile)
-- materialize (for quad join & push-based evaluation)
+- materialize (for quad join & push-based evaluation) -- removed
+- introduce Interaction type as result of runAction
+- regain lazy gen/print for slow quadratic join
 
 ## todo
 - represent Records as Map ColName Value
-- introduce Interaction type as result of runAction
 - make Action be a first order type
 - will need unique name gen whencompiling to Action
 - will need types to model compile time refs to tables,records,values
