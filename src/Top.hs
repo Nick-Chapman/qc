@@ -25,7 +25,7 @@ parseArgs args = do
     [exampleName] -> Config { exampleName }
     _ -> error (show ("args",args))
   where
-    default_exampleName = "partyMemberCount"
+    default_exampleName = "commonName"
 
 ----------------------------------------------------------------------
 -- example queries
@@ -70,6 +70,14 @@ examples = Map.fromList
       (CountAgg "G" "#members"
        (GroupBy ["Party"] "G"
          (ScanFile "data/mps.csv"))))
+
+  , ("commonName",
+      project ["Forename","#Forename"]
+      (Filter (PredGt (RefField "#Forename") (RefValue (VInt 6)))
+       (CountAgg "G" "#Forename"
+        (GroupBy ["Forename"] "G"
+          (ScanFile "data/mps.csv")))))
+
   ]
 
   where
@@ -90,7 +98,11 @@ data Query
   | CountAgg ColName ColName Query
   deriving Show
 
-data Pred = PredEq Ref Ref | PredNe Ref Ref | PredAnd Pred Pred
+data Pred
+  = PredAnd Pred Pred
+  | PredEq Ref Ref
+  | PredNe Ref Ref
+  | PredGt Ref Ref
   deriving Show
 
 data Ref = RefValue Value | RefField ColName
@@ -135,11 +147,20 @@ evalPred r = \case
   PredAnd p1 p2 -> evalPred r p1 && evalPred r p2
   PredEq x1 x2 -> evalRef r x1 == evalRef r x2
   PredNe x1 x2 -> not (evalRef r x1 == evalRef r x2)
+  PredGt x1 x2 -> greaterThanV (evalRef r x1) (evalRef r x2)
 
 evalRef :: Record -> Ref -> Value
 evalRef r = \case
   RefValue v -> v
   RefField c -> selectR r c
+
+greaterThanV :: Value -> Value -> Bool
+greaterThanV v1 v2 = getIntV v1 > getIntV v2
+
+getIntV :: Value -> Int
+getIntV = \case
+  VInt n -> n
+  v -> error ("getIntV, not an int: " ++ show v)
 
 ----------------------------------------------------------------------
 -- table operations

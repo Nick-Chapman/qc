@@ -1,5 +1,5 @@
 
-examples = johns sameSurname sameSurnameH johnsByParty partyMemberCount
+examples = johns sameSurname sameSurnameH johnsByParty partyMemberCount commonName
 
 outputs = $(patsubst %,_out/%.out,$(examples))
 
