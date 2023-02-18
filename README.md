@@ -16,9 +16,17 @@ Explore query compilation via staged interpretation.
 - slow (quadratic) join
 - hash-join (kinda - uses log-maps, but avoids being quadratic which is what is most important)
 - group-by (separate aggregate & expand)
+- push-based evaluation (step to compile)
+- materialize (for quad join & push-based evaluation)
 
 ## todo
-- push-based evaluation
+- represent Records as Map ColName Value
+- introduce Interaction type as result of runAction
+- make Action be a first order type
+- will need unique name gen whencompiling to Action
+- will need types to model compile time refs to tables,records,values
+- and evalAction will need an environment for their bindings
+- move remaining example to push-based-eval/compile
 - simple parser for SQL -> query plan
 - staged interpreter; generated code, C?
 - types: string and ints
