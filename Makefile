@@ -1,12 +1,12 @@
 
 examples = johns sameSurname sameSurnameH johnsByParty partyMemberCount commonName commonNameAcrossParties
 
-outputs = $(patsubst %,_out/%.out,$(examples))
+outputs = $(patsubst %,_out/%.csv,$(examples))
 
 top: $(outputs) diff
 
 diff:
 	git diff _out
 
-_out/%.out: Makefile src/*.hs data/mps.csv
-	stack run -- $(patsubst _out/%.out,%,$@) > $@ || rm $@
+_out/%.csv: Makefile src/*.hs data/mps.csv
+	stack run -- $(patsubst _out/%.csv,%,$@) > $@ || rm $@
