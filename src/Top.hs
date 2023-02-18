@@ -25,7 +25,7 @@ parseArgs args = do
     [exampleName] -> Config { exampleName }
     _ -> error (show ("args",args))
   where
-    default_exampleName = "johnsByParty"
+    default_exampleName = "partyMemberCount"
 
 ----------------------------------------------------------------------
 -- example queries
@@ -64,6 +64,12 @@ examples = Map.fromList
         (HashJoin ["R.Surname"] ["S.Surname"]
           (projectPrefix "R" ["Forename","Surname","Party"] (ScanFile "data/mps.csv"))
           (projectPrefix "S" ["Forename","Surname","Party"] (ScanFile "data/mps.csv")))))
+
+  , ("partyMemberCount",
+      project ["Party","#members"]
+      (CountAgg "G" "#members"
+       (GroupBy ["Party"] "G"
+         (ScanFile "data/mps.csv"))))
   ]
 
   where
@@ -81,6 +87,7 @@ data Query
   | HashJoin Schema Schema Query Query
   | GroupBy Schema ColName Query
   | ExpandAgg ColName Query
+  | CountAgg ColName ColName Query
   deriving Show
 
 data Pred = PredEq Ref Ref | PredNe Ref Ref | PredAnd Pred Pred
@@ -119,6 +126,9 @@ evalQI = eval
       ExpandAgg aggCol sub -> do
         t <- eval sub
         pure (expandAgg aggCol t)
+      CountAgg aggCol countCol sub -> do
+        t <- eval sub
+        pure (countAgg aggCol countCol t)
 
 evalPred :: Record -> Pred -> Bool
 evalPred r = \case
@@ -181,6 +191,15 @@ expandAgg aggCol (Table rs1) = do
     , r2 <- rs2
     ]
 
+countAgg :: ColName -> ColName -> Table -> Table
+countAgg aggCol countCol (Table rs1) = do
+  Table $
+    [ combineR r1 rCount
+    | r1 <- rs1
+    , let VAgg (Table rs2) = selectR r1 aggCol
+    , let rCount = Record { schema = [countCol], fields = [ VInt (length rs2) ] }
+    ]
+
 ----------------------------------------------------------------------
 -- record operations
 
@@ -213,7 +232,7 @@ data Record = Record { fields :: [Value], schema :: Schema }
 type Schema = [ColName]
 type ColName = String
 
-data Value = VString String | VAgg Table
+data Value = VString String | VInt Int | VAgg Table
   deriving (Eq,Ord)
 
 ----------------------------------------------------------------------
@@ -225,6 +244,7 @@ instance Show Table where
 instance Show Value where
   show = \case
     VString s -> show s
+    VInt n -> show n
     --VAgg t -> show t
     VAgg (Table rs) -> printf "[table:size=%d]" (length rs)
 
