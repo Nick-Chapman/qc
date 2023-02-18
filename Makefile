@@ -8,5 +8,10 @@ top: $(outputs) diff
 diff:
 	git diff _out
 
-_out/%.csv: Makefile src/*.hs data/mps.csv
-	stack run -- $(patsubst _out/%.csv,%,$@) > $@ || rm $@
+_out/%.csv: .build Makefile data/mps.csv
+	@ echo 'Generating $@'
+	@ ./run.sh $(patsubst _out/%.csv,%,$@) > $@ || rm $@
+
+.build: src/*.hs Makefile
+	stack build
+	touch .build
