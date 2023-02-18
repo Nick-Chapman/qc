@@ -14,13 +14,14 @@ main = do
   let q = getExample exampleName
   let canCompile = exampleName `elem` ["johns","sameSurname"]
   if | canCompile -> do
-         let s = schemaOfQuery q
+         --let s = schemaOfQuery q
          let a = compile q
-         putStrLn (intercalate "," s)
-         runAction a
+         --putStrLn (intercalate "," s)
+         t <- runAction a
+         putStr (prettyT t)
      | otherwise -> do
-         res <- evalQI q
-         putStr (prettyT res)
+         t <- evalQI q
+         putStr (prettyT t)
   where
     getExample :: String -> Query
     getExample x = maybe (error ("no example: "++ x)) id $ Map.lookup x examples
@@ -132,7 +133,7 @@ data Ref = RefValue Value | RefField ColName
 ----------------------------------------------------------------------
 -- compiling queries
 
-schemaOfQuery :: Query -> Schema
+{-schemaOfQuery :: Query -> Schema
 schemaOfQuery = sofq
   where
     sofq :: Query -> Schema
@@ -144,7 +145,7 @@ schemaOfQuery = sofq
       HashJoin{} -> undefined -- cols1 cols2 sub1 sub2 -> do
       GroupBy{} -> undefined -- cols tag sub -> do
       ExpandAgg{} -> undefined -- aggCol sub -> do
-      CountAgg{} -> undefined -- aggCol countCol sub -> do
+      CountAgg{} -> undefined -- aggCol countCol sub -> do-}
 
 compile :: Query -> Action
 compile q = compile q $ \r -> A_PrintRecord r
@@ -159,11 +160,17 @@ compile q = compile q $ \r -> A_PrintRecord r
 
       Filter pred sub -> do
         compile sub $ \r -> if evalPred r pred then k r else A_Sequence []
-
+{-
       Join sub1 sub2 -> do
         compile sub1 $ \r1 -> do
           compile sub2 $ \r2 -> do
             k (combineR r1 r2)
+-}
+      Join sub1 sub2 -> do
+        A_Materialize (compile sub2 $ A_PrintRecord) $ \tab -> do
+          compile sub1 $ \r1 -> do
+            A_ScanTable tab $ \r2 -> do
+              k (combineR r1 r2)
 
       HashJoin{} -> undefined -- cols1 cols2 sub1 sub2 -> do
       GroupBy{} -> undefined -- cols tag sub -> do
@@ -174,18 +181,51 @@ data Action
   = A_Sequence [Action]
   | A_ScanFile FilePath (Record -> Action)
   | A_PrintRecord Record
+  | A_Materialize Action (Table -> Action)
+  | A_ScanTable Table (Record -> Action)
 
-runAction :: Action -> IO ()
-runAction = \case
+runAction :: Action -> IO Table
+runAction a = Table <$> (run a)
+  where
+    run :: Action -> IO [Record]
+    run = \case
+      A_Sequence as -> do
+        concat <$> mapM run as
+
+      A_ScanFile filename f -> do
+        Table rs <- loadTableFromCSV filename
+        concat <$> mapM (run . f) rs
+
+      A_PrintRecord r -> do
+        pure [r]
+
+      A_Materialize a f -> do
+        rs <- run a
+        run (f (Table rs))
+
+      A_ScanTable (Table rs) f ->
+        concat <$> mapM (run . f) rs
+
+
+{-
+_runAction' :: Action -> IO ()
+_runAction' = \case
   A_Sequence as -> do
-    mapM_ runAction as
+    mapM_ _runAction' as
 
   A_ScanFile filename f -> do
     Table rs <- loadTableFromCSV filename
-    runAction (A_Sequence (map f rs))
+    _runAction' (A_Sequence (map f rs))
 
   A_PrintRecord r -> do
     putStrLn (prettyR r)
+
+  A_Materialize{} ->
+    undefined
+
+  A_ScanTable{} ->
+    undefined
+-}
 
 ----------------------------------------------------------------------
 -- evaluating queries
@@ -357,9 +397,9 @@ prettyT tab@(Table rs) = case rs of
        intercalate "," sc1 ++ "\n"
          ++ unlines [ intercalate "," (map show fields) | Record {fields} <- r:rs ]
 
-prettyR :: Record -> String
+{-prettyR :: Record -> String
 prettyR Record{fields} =
-  intercalate "," (map show fields)
+  intercalate "," (map show fields)-}
 
 ----------------------------------------------------------------------
 -- parsing tables from CVS
