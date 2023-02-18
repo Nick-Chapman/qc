@@ -13,10 +13,11 @@ Explore query compilation via staged interpretation.
 - parse CVS files (including quoted fields)
 - example data: uk mps
 - simple recursive evaluation
+- slow (quadratic) join
 
 ## todo
 - push-based evaluation
-- query plan operators: join, group-by, hash-join
+- query plan operators: group-by, hash-join
 - simple parser for SQL -> query plan
 - staged interpreter; generated code, C?
 - types: string and ints
