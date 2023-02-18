@@ -98,20 +98,9 @@ evalQI = eval
         Table rs2 <- eval sub2
         pure $ Table [ combineR r1 r2 | r1 <- rs1, r2 <- rs2 ]
       HashJoin cols1 cols2 sub1 sub2 -> do
-        Table rs1 <- eval sub1
-        Table rs2 <- eval sub2
-        let m1 :: Map [Value] [Record] =
-              Map.fromListWith (++)
-              [ (key, [r1])
-              | r1 <- rs1
-              , let key = map (selectR r1) cols1
-              ]
-        pure $ Table $
-          [ combineR r1 r2
-          | r2 <- rs2
-          , let key = map (selectR r2) cols2
-          , r1 <- maybe [] id $ Map.lookup key m1
-          ]
+        t1 <- eval sub1
+        t2 <- eval sub2
+        pure (combineTables cols1 cols2 t1 t2)
 
 evalPred :: Record -> Pred -> Bool
 evalPred r = \case
@@ -131,6 +120,21 @@ selectR Record{fields,schema} col = the who [ v | (c,v) <- zip schema fields, c=
 combineR :: Record -> Record -> Record
 combineR Record{fields=f1,schema=s1} Record{fields=f2,schema=s2} =
   Record{fields=f1++f2, schema=s1++s2}
+
+combineTables :: Schema -> Schema -> Table -> Table -> Table
+combineTables cols1 cols2 (Table rs1) (Table rs2) = do
+  let m1 :: Map [Value] [Record] =
+        Map.fromListWith (++)
+        [ (key, [r1])
+        | r1 <- rs1
+        , let key = map (selectR r1) cols1
+        ]
+  Table $
+    [ combineR r1 r2
+    | r2 <- rs2
+    , let key = map (selectR r2) cols2
+            , r1 <- maybe [] id $ Map.lookup key m1
+    ]
 
 ----------------------------------------------------------------------
 -- values
