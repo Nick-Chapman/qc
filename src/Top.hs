@@ -272,18 +272,20 @@ data Interaction
   | I_Print String Interaction
 
 runI :: Interaction -> IO ()
-runI = loop where
-  loop = \case
+runI = loop Map.empty where
+  loop :: Map FilePath Table -> Interaction -> IO ()
+  loop tMap = \case
     I_Done -> pure ()
     I_LoadTable filename k -> do
-      --putStrLn ("LOAD: " ++ filename ++ "...")
-      t <- loadTableFromCSV filename
-      --putStrLn ("LOAD: " ++ filename ++ "...DONE")
-      runI (k t)
+      case Map.lookup filename tMap of
+        Just tab -> do
+          loop tMap (k tab)
+        Nothing -> do
+          tab <- loadTableFromCSV filename
+          loop (Map.insert filename tab tMap) (k tab)
     I_Print s i -> do
       putStrLn s
-      loop i
-
+      loop tMap i
 
 ----------------------------------------------------------------------
 -- evaluating queries
