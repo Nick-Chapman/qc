@@ -25,7 +25,7 @@ parseArgs args = do
     [exampleName] -> Config { exampleName }
     _ -> error (show ("args",args))
   where
-    default_exampleName = "commonName"
+    default_exampleName = "commonNameAcrossParties"
 
 ----------------------------------------------------------------------
 -- example queries
@@ -78,6 +78,16 @@ examples = Map.fromList
         (GroupBy ["Forename"] "G"
           (ScanFile "data/mps.csv")))))
 
+  , ("commonNameAcrossParties",
+      project ["Forename","F.Party","F.#ForenameByParty"]
+      (ExpandAgg "F"
+        (Filter (PredGt (RefField "#PartiesWithThanCommonName") (RefValue (VInt 1)))
+         (CountAgg "F" "#PartiesWithThanCommonName"
+          (GroupBy ["Forename"] "F"
+           (Filter (PredGt (RefField "#ForenameByParty") (RefValue (VInt 4)))
+            (CountAgg "FP" "#ForenameByParty"
+             (GroupBy ["Forename","Party"] "FP"
+              (ScanFile "data/mps.csv")))))))))
   ]
 
   where
