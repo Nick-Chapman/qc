@@ -10,31 +10,31 @@ import qualified Data.Map as Map
 main :: IO ()
 main = do
   args <- getArgs
-  case parseArgs args of
-    Config {exampleName} -> do
-      let q = getExample exampleName
-      res <- evalQI q
-      putStr (pretty res)
-      pure ()
-    Dev -> do
-      let q = getExample "johns"
-      let a = compile q
-      runAction a
-
+  let Config {exampleName} = parseArgs args
+  let q = getExample exampleName
+  let canCompile = exampleName `elem` ["johns","sameSurname"]
+  if | canCompile -> do
+         let s = schemaOfQuery q
+         let a = compile q
+         putStrLn (intercalate "," s)
+         runAction a
+     | otherwise -> do
+         res <- evalQI q
+         putStr (prettyT res)
   where
     getExample :: String -> Query
     getExample x = maybe (error ("no example: "++ x)) id $ Map.lookup x examples
 
-data Config = Config { exampleName :: String } | Dev
+data Config = Config { exampleName :: String }
 
 parseArgs :: [String] -> Config
 parseArgs args = do
   case args of
-    [] -> Dev --Config { exampleName = default_exampleName}
+    [] -> Config { exampleName = default_exampleName}
     [exampleName] -> Config { exampleName }
     _ -> error (show ("args",args))
   where
-    --default_exampleName = "commonNameAcrossParties"
+    default_exampleName = "sameSurname"
 
 ----------------------------------------------------------------------
 -- example queries
@@ -44,7 +44,7 @@ examples = Map.fromList
   [ ("johns",
       project ["Forename","Surname","Party"]
       (Filter (PredEq (RefValue (VString "John")) (RefField "Forename"))
-       (ScanFile "data/mps.csv")))
+       (ScanFile mps "data/mps.csv")))
 
   , ("johnsByParty",
       project ["Party","G.Surname"]
@@ -52,7 +52,7 @@ examples = Map.fromList
        (GroupBy ["Party"] "G"
         (project ["Forename","Surname","Party"]
          (Filter (PredEq (RefValue (VString "John")) (RefField "Forename"))
-          (ScanFile "data/mps.csv"))))))
+          (ScanFile mps "data/mps.csv"))))))
 
   -- example of slow quadratic join
   , ("sameSurname",
@@ -62,8 +62,8 @@ examples = Map.fromList
         (PredEq (RefField "R.Surname") (RefField "S.Surname"))
         (PredNe (RefField "R.Forename") (RefField "S.Forename")))
         (Join
-          (projectPrefix "R" ["Forename","Surname","Party"] (ScanFile "data/mps.csv"))
-          (projectPrefix "S" ["Forename","Surname","Party"] (ScanFile "data/mps.csv")))))
+          (projectPrefix "R" ["Forename","Surname","Party"] (ScanFile mps "data/mps.csv"))
+          (projectPrefix "S" ["Forename","Surname","Party"] (ScanFile mps "data/mps.csv")))))
 
   -- same example using hash join
   , ("sameSurnameH",
@@ -71,21 +71,21 @@ examples = Map.fromList
       (Filter
        (PredNe (RefField "R.Forename") (RefField "S.Forename"))
         (HashJoin ["R.Surname"] ["S.Surname"]
-          (projectPrefix "R" ["Forename","Surname","Party"] (ScanFile "data/mps.csv"))
-          (projectPrefix "S" ["Forename","Surname","Party"] (ScanFile "data/mps.csv")))))
+          (projectPrefix "R" ["Forename","Surname","Party"] (ScanFile mps "data/mps.csv"))
+          (projectPrefix "S" ["Forename","Surname","Party"] (ScanFile mps "data/mps.csv")))))
 
   , ("partyMemberCount",
       project ["Party","#members"]
       (CountAgg "G" "#members"
        (GroupBy ["Party"] "G"
-         (ScanFile "data/mps.csv"))))
+         (ScanFile mps "data/mps.csv"))))
 
   , ("commonName",
       project ["Forename","#Forename"]
       (Filter (PredGt (RefField "#Forename") (RefValue (VInt 6)))
        (CountAgg "G" "#Forename"
         (GroupBy ["Forename"] "G"
-          (ScanFile "data/mps.csv")))))
+          (ScanFile mps "data/mps.csv")))))
 
   , ("commonNameAcrossParties",
       project ["Forename","F.Party","F.#ForenameByParty"]
@@ -96,18 +96,20 @@ examples = Map.fromList
            (Filter (PredGt (RefField "#ForenameByParty") (RefValue (VInt 4)))
             (CountAgg "FP" "#ForenameByParty"
              (GroupBy ["Forename","Party"] "FP"
-              (ScanFile "data/mps.csv")))))))))
+              (ScanFile mps "data/mps.csv")))))))))
   ]
 
   where
     project sc = ProjectAs sc sc
     projectPrefix tag sc = ProjectAs sc [ tag++"."++col | col <- sc ]
 
+    mps = ["Forename","Surname","Name (Display as)","Name (List as)","Party","Constituency","Email","Address 1","Address 2","Postcode"]
+
 ----------------------------------------------------------------------
 -- query language
 
 data Query
-  = ScanFile FilePath
+  = ScanFile Schema FilePath -- carry schema to avoid file read at compile time
   | ProjectAs Schema Schema Query
   | Filter Pred Query
   | Join Query Query
@@ -130,12 +132,26 @@ data Ref = RefValue Value | RefField ColName
 ----------------------------------------------------------------------
 -- compiling queries
 
+schemaOfQuery :: Query -> Schema
+schemaOfQuery = sofq
+  where
+    sofq :: Query -> Schema
+    sofq = \case
+      ScanFile sc _ -> sc
+      ProjectAs _ out _ -> out
+      Filter _ sub -> sofq sub
+      Join subs1 subs2 -> sofq subs1 ++ sofq subs2
+      HashJoin{} -> undefined -- cols1 cols2 sub1 sub2 -> do
+      GroupBy{} -> undefined -- cols tag sub -> do
+      ExpandAgg{} -> undefined -- aggCol sub -> do
+      CountAgg{} -> undefined -- aggCol countCol sub -> do
+
 compile :: Query -> Action
 compile q = compile q $ \r -> A_PrintRecord r
   where
     compile :: Query -> (Record -> Action) -> Action
     compile q k = case q of
-      ScanFile filename -> do
+      ScanFile _ filename -> do
         A_ScanFile filename k
 
       ProjectAs inp out sub -> do
@@ -144,19 +160,20 @@ compile q = compile q $ \r -> A_PrintRecord r
       Filter pred sub -> do
         compile sub $ \r -> if evalPred r pred then k r else A_Sequence []
 
-      Join{} -> undefined -- sub1 sub2 -> do
+      Join sub1 sub2 -> do
+        compile sub1 $ \r1 -> do
+          compile sub2 $ \r2 -> do
+            k (combineR r1 r2)
+
       HashJoin{} -> undefined -- cols1 cols2 sub1 sub2 -> do
       GroupBy{} -> undefined -- cols tag sub -> do
       ExpandAgg{} -> undefined -- aggCol sub -> do
       CountAgg{} -> undefined -- aggCol countCol sub -> do
 
-
 data Action
   = A_Sequence [Action]
   | A_ScanFile FilePath (Record -> Action)
   | A_PrintRecord Record
-  --deriving Show
-
 
 runAction :: Action -> IO ()
 runAction = \case
@@ -178,7 +195,7 @@ evalQI = eval
   where
     eval :: Query -> IO Table
     eval = \case
-      ScanFile filename -> do
+      ScanFile _ filename -> do
         loadTableFromCSV filename
       ProjectAs inp out sub -> do
         t <- eval sub
@@ -322,7 +339,7 @@ data Value = VString String | VInt Int | VAgg Table
 -- displaying  values
 
 instance Show Table where
-  show = pretty
+  show = prettyT
 
 instance Show Value where
   show = \case
@@ -331,8 +348,8 @@ instance Show Value where
     --VAgg t -> show t
     VAgg (Table rs) -> printf "[table:size=%d]" (length rs)
 
-pretty :: Table -> String
-pretty tab@(Table rs) = case rs of
+prettyT :: Table -> String
+prettyT tab@(Table rs) = case rs of
    [] -> "*empty table*"
    r@Record{schema=sc1}:rs -> do
      if (not (all (== sc1) [ sc2 | Record {schema=sc2} <- rs ]))
