@@ -12,10 +12,11 @@ main = do
   args <- getArgs
   let Config {exampleName} = parseArgs args
   let q = getExample exampleName
-  let canCompile = exampleName `elem` ["johns","sameSurname"]
+
+  let canCompile = exampleName `elem` ["johns","sameSurname","dev"]
   if | canCompile -> do
          let a = compile q
-         --print a
+         if exampleName == "dev" then print a else pure ()
          let s = schemaOfQuery q
          putStrLn (intercalate "," s)
          runI (runActionI a)
@@ -37,7 +38,7 @@ parseArgs args = do
     [exampleName] -> Config { exampleName }
     _ -> error (show ("args",args))
   where
-    default_exampleName = "sameSurname"
+    default_exampleName = "dev"
 
 ----------------------------------------------------------------------
 -- example queries
@@ -80,6 +81,12 @@ examples = Map.fromList
   , ("partyMemberCount",
       project ["Party","#members"]
       (CountAgg "G" "#members"
+       (GroupBy ["Party"] "G"
+         (ScanFile mps "data/mps.csv"))))
+
+  , ("dev",
+      --project ["Party","#members"]
+      (--CountAgg "G" "#members"
        (GroupBy ["Party"] "G"
          (ScanFile mps "data/mps.csv"))))
 
@@ -145,7 +152,7 @@ schemaOfQuery = sofq
       Filter _ sub -> sofq sub
       Join subs1 subs2 -> sofq subs1 ++ sofq subs2
       HashJoin{} -> undefined -- cols1 cols2 sub1 sub2 -> do
-      GroupBy{} -> undefined -- cols tag sub -> do
+      GroupBy cols tag _ -> cols ++ [tag]
       ExpandAgg{} -> undefined -- aggCol sub -> do
       CountAgg{} -> undefined -- aggCol countCol sub -> do
 
@@ -157,9 +164,8 @@ compile q = compile s0 q $ \CompState{} r -> A_Emit r
     compile :: CompState -> Query -> (CompState -> RExp -> Action) -> Action
     compile s q k = case q of
       ScanFile _ filename -> do
-        let CompState{u} = s
-        let rid = RId u
-        A_ScanFile filename rid (k s { u = u+1 } (RefR rid))
+        genRid s $ \s rid ->
+          A_ScanFile filename rid (k s (RefR rid))
 
       ProjectAs inp out sub -> do
         compile s sub $ \s r -> k s (RenameR inp out r)
@@ -173,9 +179,28 @@ compile q = compile s0 q $ \CompState{} r -> A_Emit r
             k s (CombineR r1 r2)
 
       HashJoin{} -> undefined -- cols1 cols2 sub1 sub2 -> do
-      GroupBy{} -> undefined -- cols tag sub -> do
+
+      GroupBy cols tag sub -> do
+        genHid s $ \s hid -> do
+          genRid s $ \s rid -> do
+            A_NewHT hid
+              (compile s sub $ \_ r -> do
+                  A_InsertHT cols r)
+              (A_ScanHT hid tag rid
+                (k s (RefR rid)))
+
       ExpandAgg{} -> undefined -- aggCol sub -> do
       CountAgg{} -> undefined -- aggCol countCol sub -> do
+
+
+genRid :: CompState -> (CompState -> RId -> Action) -> Action
+genRid s@CompState{u} k = do
+  k s { u = u + 1 } (RId u)
+
+genHid :: CompState -> (CompState -> HId -> Action) -> Action
+genHid s@CompState{u} k = do
+  k s { u = u + 1 } (HId u)
+
 
 data CompState = CompState { u :: Int }
 
@@ -185,12 +210,12 @@ compilePred r = \case
   PredEq x1 x2 -> BEq (compileRef r x1) (compileRef r x2)
   PredNe x1 x2 -> BNe (compileRef r x1) (compileRef r x2)
   PredGt{} -> undefined
-{-  
+{-
   PredAnd p1 p2 -> evalPred r p1 && evalPred r p2
   PredEq x1 x2 -> evalRef r x1 == evalRef r x2
   PredNe x1 x2 -> not (evalRef r x1 == evalRef r x2)
   PredGt x1 x2 -> greaterThanV (evalRef r x1) (evalRef r x2)
--}  
+-}
 
 compileRef :: RExp -> Ref -> VExp
 compileRef r = \case
@@ -204,8 +229,9 @@ data Action
   = A_ScanFile FilePath RId Action
   | A_Emit RExp
   | A_If BExp Action
---  | A_Materialize Action (Table -> Action)
---  | A_ScanTable Table (Record -> Action)
+  | A_NewHT HId Action Action
+  | A_InsertHT Schema RExp
+  | A_ScanHT HId ColName RId Action
 
 data BExp
   = BAnd BExp BExp
@@ -225,6 +251,10 @@ data RId
   = RId Int
   deriving (Eq,Ord)
 
+data HId
+  = HId Int
+  deriving (Eq,Ord)
+
 ----------------------------------------------------------------------
 -- pp code types
 
@@ -236,16 +266,27 @@ ppAction = \case
   A_ScanFile filename rid bodyA -> concat
     [ [ "scan(" ++ show filename ++ ") { " ++ show rid ++ " => "]
     , indent (ppAction bodyA)
-    , [ "} "]
+    , [ "}"]
     ]
   A_Emit r ->
     [ "emit: " ++ show r ]
   A_If p bodyA -> concat
     [ [ "if(" ++ show p ++ ") {" ]
     , indent (ppAction bodyA)
-    , [ "} "]
+    , [ "}"]
     ]
-
+  A_NewHT hid aBuild aScan -> concat
+    [ [ "let " ++ show hid ++ " = " ++ "newHT()" ]
+    , ppAction aBuild
+    , ppAction aScan
+    ]
+  A_InsertHT schema r ->
+    [ "insertHT: " ++ show (schema,r) ]
+  A_ScanHT hid tag rid bodyA -> concat
+    [ [ "scanHT" ++ show (hid,tag) ++ " { " ++ show rid ++ " => "]
+    , indent (ppAction bodyA)
+    , [ "}"]
+    ]
   where
     indent :: [String] -> [String]
     indent xs = [ "  " ++ x | x <- xs ]
@@ -270,6 +311,9 @@ instance Show RExp where
 instance Show RId where
   show (RId n) = "r" ++ show n
 
+instance Show HId where
+  show (HId n) = "h" ++ show n
+
 ----------------------------------------------------------------------
 -- Action -> Interaction
 
@@ -293,6 +337,15 @@ runActionI a = run Map.empty a I_Done
 
       A_If p bodyA -> do
         if (evalB rm p) then run rm bodyA then_ else then_
+
+      A_NewHT{} -> do
+        undefined
+
+      A_InsertHT{} -> do
+        undefined
+
+      A_ScanHT{} -> do
+        undefined
 
 evalB :: RMap -> BExp -> Bool
 evalB rm = \case
@@ -499,7 +552,6 @@ instance Show Value where
   show = \case
     VString s -> show s
     VInt n -> show n
-    --VAgg t -> show t
     VAgg (Table rs) -> printf "[table:size=%d]" (length rs)
 
 prettyT :: Table -> String
