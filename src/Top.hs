@@ -12,10 +12,11 @@ main = do
   args <- getArgs
   let Config {exampleName} = parseArgs args
   let q = getExample exampleName
-  let canCompile = exampleName `elem` ["johns","sameSurname"]
+  let canCompile = exampleName `elem` ["johns"] --,"sameSurname"] -- TODO
   if | canCompile -> do
-         let s = schemaOfQuery q
          let a = compile q
+         --print a
+         let s = schemaOfQuery q
          putStrLn (intercalate "," s)
          runActionIO a
 
@@ -35,7 +36,7 @@ parseArgs args = do
     [exampleName] -> Config { exampleName }
     _ -> error (show ("args",args))
   where
-    default_exampleName = "sameSurname"
+    default_exampleName = "sameSurname" -- TODO: need u-gen to work
 
 ----------------------------------------------------------------------
 -- example queries
@@ -150,39 +151,128 @@ schemaOfQuery = sofq
 compile :: Query -> Action
 compile q = compile q $ \r -> A_Emit r
   where
-    compile :: Query -> (Record -> Action) -> Action
+    compile :: Query -> (RExp -> Action) -> Action
     compile q k = case q of
       ScanFile _ filename -> do
-        A_ScanFile filename k
+        let rid :: RId = RId 42 -- TODO, need u-gen here
+        A_ScanFile filename rid (k (RefR rid))
 
       ProjectAs inp out sub -> do
-        compile sub $ \r -> k (renameR inp out r)
+        compile sub $ \r -> k (RenameR inp out r)
 
       Filter pred sub -> do
-        compile sub $ \r -> if evalPred r pred then k r else A_Sequence []
+        compile sub $ \r -> A_If (compilePred r pred) (k r)
 
       Join sub1 sub2 -> do
         compile sub1 $ \r1 -> do
           compile sub2 $ \r2 -> do
-            k (combineR r1 r2)
+            k (CombineR r1 r2)
 
       HashJoin{} -> undefined -- cols1 cols2 sub1 sub2 -> do
       GroupBy{} -> undefined -- cols tag sub -> do
       ExpandAgg{} -> undefined -- aggCol sub -> do
       CountAgg{} -> undefined -- aggCol countCol sub -> do
 
+compilePred :: RExp -> Pred -> BExp
+compilePred r = \case
+  PredAnd p1 p2 -> BAnd (compilePred r p1) (compilePred r p2)
+  PredEq x1 x2 -> BEq (compileRef r x1) (compileRef r x2)
+  PredNe x1 x2 -> BNe (compileRef r x1) (compileRef r x2)
+  PredGt{} -> undefined
+{-  
+  PredAnd p1 p2 -> evalPred r p1 && evalPred r p2
+  PredEq x1 x2 -> evalRef r x1 == evalRef r x2
+  PredNe x1 x2 -> not (evalRef r x1 == evalRef r x2)
+  PredGt x1 x2 -> greaterThanV (evalRef r x1) (evalRef r x2)
+-}  
+
+compileRef :: RExp -> Ref -> VExp
+compileRef r = \case
+  RefValue v -> VLit v
+  RefField c -> VSelect r c
+
+
+-- TODO: pp for Action and {B,V,R)Exp -- which is the result of compilation
+
 data Action
-  = A_Sequence [Action]
-  | A_ScanFile FilePath (Record -> Action)
-  | A_Emit Record
+  = A_ScanFile FilePath RId Action
+  | A_Emit RExp
+  | A_If BExp Action
 --  | A_Materialize Action (Table -> Action)
 --  | A_ScanTable Table (Record -> Action)
+  deriving Show
+
+data BExp
+  = BAnd BExp BExp
+  | BEq VExp VExp
+  | BNe VExp VExp
+  deriving Show
+
+data VExp
+  = VLit Value
+  | VSelect RExp ColName
+  deriving Show
+
+data RExp
+  = CombineR RExp RExp
+  | RenameR Schema Schema RExp
+  | RefR RId
+  deriving Show
+
+data RId
+  = RId Int
+  deriving (Eq,Ord,Show)
+
 
 runActionIO :: Action -> IO ()
 runActionIO a =
   runI (runActionI a)
 
 runActionI :: Action -> Interaction
+runActionI a = run Map.empty a I_Done
+  where
+    run :: RMap -> Action -> Interaction -> Interaction
+    run rm a then_ = case a of
+
+      A_ScanFile filename rid bodyA -> do
+        I_LoadTable filename $ \(Table rs) -> do
+          let
+            inner :: [Record] -> Interaction
+            inner = \case
+              [] -> then_
+              r:rs -> run (Map.insert rid r rm) bodyA (inner rs)
+          inner rs
+
+      A_Emit r ->
+        I_Print (prettyR (evalR rm r)) then_
+
+      A_If p bodyA -> do
+        if (evalB rm p) then run rm bodyA then_ else then_
+
+evalB :: RMap -> BExp -> Bool
+evalB rm = \case
+  BAnd b1 b2 -> evalB rm b1 && evalB rm b2
+  BEq v1 v2 -> evalV rm v1 == evalV rm v2
+  BNe v1 v2 -> evalV rm v1 /= evalV rm v2
+
+evalV :: RMap -> VExp -> Value
+evalV rm = \case
+  VLit v -> v
+  VSelect r c -> selectR (evalR rm r) c
+
+evalR :: RMap -> RExp -> Record
+evalR rm = \case
+  CombineR r1 r2 -> do
+    combineR (evalR rm r1) (evalR rm r2)
+  RenameR inp out r -> do
+    renameR inp out (evalR rm r)
+  RefR rid -> do
+    maybe err id $ Map.lookup rid rm
+      where err = error (show ("evalR/RefR",rid))
+
+type RMap = Map RId Record
+
+{-
 runActionI a = loop a I_Done
   where
     loop :: Action -> Interaction -> Interaction
@@ -194,7 +284,7 @@ runActionI a = loop a I_Done
           loop (A_Sequence (map f rs)) k
       A_Emit r -> do
         I_Print (prettyR r) k
-
+-}
 ----------------------------------------------------------------------
 -- Interaction (instead of IO)
 
