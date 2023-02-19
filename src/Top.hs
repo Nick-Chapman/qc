@@ -12,13 +12,14 @@ main = do
   args <- getArgs
   let Config {exampleName} = parseArgs args
   let q = getExample exampleName
-  let canCompile = exampleName `elem` ["johns"] --,"sameSurname"] -- TODO
+  let canCompile = exampleName `elem` ["johns","sameSurname"]
   if | canCompile -> do
          let a = compile q
          --print a
          let s = schemaOfQuery q
          putStrLn (intercalate "," s)
-         runActionIO a
+         runI (runActionI a)
+         pure ()
 
      | otherwise -> do
          t <- evalQI q
@@ -36,7 +37,7 @@ parseArgs args = do
     [exampleName] -> Config { exampleName }
     _ -> error (show ("args",args))
   where
-    default_exampleName = "sameSurname" -- TODO: need u-gen to work
+    default_exampleName = "sameSurname"
 
 ----------------------------------------------------------------------
 -- example queries
@@ -149,29 +150,34 @@ schemaOfQuery = sofq
       CountAgg{} -> undefined -- aggCol countCol sub -> do
 
 compile :: Query -> Action
-compile q = compile q $ \r -> A_Emit r
+compile q = compile s0 q $ \CompState{} r -> A_Emit r
   where
-    compile :: Query -> (RExp -> Action) -> Action
-    compile q k = case q of
+    s0 = CompState { u = 1 }
+
+    compile :: CompState -> Query -> (CompState -> RExp -> Action) -> Action
+    compile s q k = case q of
       ScanFile _ filename -> do
-        let rid :: RId = RId 42 -- TODO, need u-gen here
-        A_ScanFile filename rid (k (RefR rid))
+        let CompState{u} = s
+        let rid = RId u
+        A_ScanFile filename rid (k s { u = u+1 } (RefR rid))
 
       ProjectAs inp out sub -> do
-        compile sub $ \r -> k (RenameR inp out r)
+        compile s sub $ \s r -> k s (RenameR inp out r)
 
       Filter pred sub -> do
-        compile sub $ \r -> A_If (compilePred r pred) (k r)
+        compile s sub $ \s r -> A_If (compilePred r pred) (k s r)
 
       Join sub1 sub2 -> do
-        compile sub1 $ \r1 -> do
-          compile sub2 $ \r2 -> do
-            k (CombineR r1 r2)
+        compile s sub1 $ \s r1 -> do
+          compile s sub2 $ \s r2 -> do
+            k s (CombineR r1 r2)
 
       HashJoin{} -> undefined -- cols1 cols2 sub1 sub2 -> do
       GroupBy{} -> undefined -- cols tag sub -> do
       ExpandAgg{} -> undefined -- aggCol sub -> do
       CountAgg{} -> undefined -- aggCol countCol sub -> do
+
+data CompState = CompState { u :: Int }
 
 compilePred :: RExp -> Pred -> BExp
 compilePred r = \case
@@ -191,8 +197,8 @@ compileRef r = \case
   RefValue v -> VLit v
   RefField c -> VSelect r c
 
-
--- TODO: pp for Action and {B,V,R)Exp -- which is the result of compilation
+----------------------------------------------------------------------
+-- Result of compilation: Action and {B,V,R)Exp
 
 data Action
   = A_ScanFile FilePath RId Action
@@ -200,33 +206,72 @@ data Action
   | A_If BExp Action
 --  | A_Materialize Action (Table -> Action)
 --  | A_ScanTable Table (Record -> Action)
-  deriving Show
 
 data BExp
   = BAnd BExp BExp
   | BEq VExp VExp
   | BNe VExp VExp
-  deriving Show
 
 data VExp
   = VLit Value
   | VSelect RExp ColName
-  deriving Show
 
 data RExp
   = CombineR RExp RExp
   | RenameR Schema Schema RExp
   | RefR RId
-  deriving Show
 
 data RId
   = RId Int
-  deriving (Eq,Ord,Show)
+  deriving (Eq,Ord)
 
+----------------------------------------------------------------------
+-- pp code types
 
-runActionIO :: Action -> IO ()
-runActionIO a =
-  runI (runActionI a)
+instance Show Action where
+  show = unlines . ppAction
+
+ppAction :: Action -> [String]
+ppAction = \case
+  A_ScanFile filename rid bodyA -> concat
+    [ [ "scan(" ++ show filename ++ ") { " ++ show rid ++ " => "]
+    , indent (ppAction bodyA)
+    , [ "} "]
+    ]
+  A_Emit r ->
+    [ "emit: " ++ show r ]
+  A_If p bodyA -> concat
+    [ [ "if(" ++ show p ++ ") {" ]
+    , indent (ppAction bodyA)
+    , [ "} "]
+    ]
+
+  where
+    indent :: [String] -> [String]
+    indent xs = [ "  " ++ x | x <- xs ]
+
+instance Show BExp where
+  show = \case
+    BAnd b1 b2 -> show b1 ++ " && " ++ show b2
+    BEq v1 v2 -> show v1 ++ " == " ++ show v2
+    BNe v1 v2 -> show v1 ++ " /= " ++ show v2
+
+instance Show VExp where
+  show = \case
+    VLit v -> show v
+    VSelect r c -> "select" ++ show (r,c)
+
+instance Show RExp where
+  show = \case
+    CombineR r1 r2 -> "combine" ++ show (r1,r2)
+    RenameR inp out r -> "rename" ++ show (inp,out,r)
+    RefR rid -> show rid
+
+instance Show RId where
+  show (RId n) = "r" ++ show n
+
+----------------------------------------------------------------------
+-- Action -> Interaction
 
 runActionI :: Action -> Interaction
 runActionI a = run Map.empty a I_Done
@@ -272,19 +317,6 @@ evalR rm = \case
 
 type RMap = Map RId Record
 
-{-
-runActionI a = loop a I_Done
-  where
-    loop :: Action -> Interaction -> Interaction
-    loop a k = case a of
-      A_Sequence [] -> k
-      A_Sequence (a:as) -> loop a (loop (A_Sequence as) k)
-      A_ScanFile filename f -> do
-        I_LoadTable filename $ \(Table rs) ->
-          loop (A_Sequence (map f rs)) k
-      A_Emit r -> do
-        I_Print (prettyR r) k
--}
 ----------------------------------------------------------------------
 -- Interaction (instead of IO)
 

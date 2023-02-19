@@ -20,13 +20,13 @@ Explore query compilation via staged interpretation.
 - materialize (for quad join & push-based evaluation) -- removed
 - introduce Interaction type as result of runAction
 - regain lazy gen/print for slow quadratic join
+- make Action be a first order type
+- unique name gen when compiling to Action
+- types for record/value/boolean expressions, and record ids. +pp
+- evalAction in env mapping rid -> record(value)
 
 ## todo
 - represent Records as Map ColName Value
-- make Action be a first order type
-- will need unique name gen whencompiling to Action
-- will need types to model compile time refs to tables,records,values
-- and evalAction will need an environment for their bindings
 - move remaining example to push-based-eval/compile
 - simple parser for SQL -> query plan
 - staged interpreter; generated code, C?
