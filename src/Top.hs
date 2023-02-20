@@ -13,13 +13,7 @@ main = do
   let Config {exampleName} = parseArgs args
   let q = getExample exampleName
 
-  let canCompile = exampleName `notElem`
-        ["sameSurnameH"
-        -- these 3 need countAgg...
-        ,"partyMemberCount"
-        ,"commonName"
-        ,"commonNameAcrossParties"
-        ]
+  let canCompile = exampleName `notElem` ["sameSurnameH"]
 
   if | canCompile -> do
          let a = compile q
@@ -91,6 +85,12 @@ examples = Map.fromList
        (GroupBy ["Party"] "G"
          (ScanFile mps "data/mps.csv"))))
 
+  , ("dev",
+      project ["Party","#members"]
+      (CountAgg "G" "#members"
+       (GroupBy ["Party"] "G"
+         (ScanFile mps "data/mps.csv"))))
+
   , ("commonName",
       project ["Forename","#Forename"]
       (Filter (PredGt (RefField "#Forename") (RefValue (VInt 6)))
@@ -157,7 +157,8 @@ schemaOfQuery = sofq
       ExpandAgg tag sub -> undefined $ do
         let s = sofq sub
         s ++ map (\x -> tag++"."++x) s  -- wrong???
-      CountAgg{} -> undefined -- aggCol countCol sub -> do
+      CountAgg _aggCol countCol sub ->
+        sofq sub ++ [countCol]
 
 compile :: Query -> Action
 compile q = compile s0 q $ \CompState{} r -> A_Emit r
@@ -197,7 +198,10 @@ compile q = compile s0 q $ \CompState{} r -> A_Emit r
           genRid s $ \s rid -> do
             A_ExpandAgg r aggCol rid (k s (RefR rid))
 
-      CountAgg{} -> undefined -- aggCol countCol sub -> do
+      CountAgg aggCol countCol sub -> do
+        compile s sub $ \s r -> do
+          genRid s $ \s rid -> do
+            A_CountAgg r aggCol countCol rid (k s (RefR rid))
 
 
 genRid :: CompState -> (CompState -> RId -> Action) -> Action
@@ -216,13 +220,7 @@ compilePred r = \case
   PredAnd p1 p2 -> BAnd (compilePred r p1) (compilePred r p2)
   PredEq x1 x2 -> BEq (compileRef r x1) (compileRef r x2)
   PredNe x1 x2 -> BNe (compileRef r x1) (compileRef r x2)
-  PredGt{} -> undefined
-{-
-  PredAnd p1 p2 -> evalPred r p1 && evalPred r p2
-  PredEq x1 x2 -> evalRef r x1 == evalRef r x2
-  PredNe x1 x2 -> not (evalRef r x1 == evalRef r x2)
-  PredGt x1 x2 -> greaterThanV (evalRef r x1) (evalRef r x2)
--}
+  PredGt x1 x2 -> BGt (compileRef r x1) (compileRef r x2)
 
 compileRef :: RExp -> Ref -> VExp
 compileRef r = \case
@@ -240,11 +238,13 @@ data Action
   | A_InsertHT HId Schema RExp
   | A_ScanHT HId Schema ColName RId Action
   | A_ExpandAgg RExp ColName RId Action
+  | A_CountAgg RExp ColName ColName RId Action
 
 data BExp
   = BAnd BExp BExp
   | BEq VExp VExp
   | BNe VExp VExp
+  | BGt VExp VExp
 
 data VExp
   = VLit Value
@@ -300,6 +300,11 @@ ppAction = \case
     , indent (ppAction bodyA)
     , [ "}"]
     ]
+  A_CountAgg r aggCol countCol rid bodyA -> concat
+    [ [ "CountAgg" ++ show (r,aggCol,countCol) ++ " { " ++ show rid ++ " => "]
+    , indent (ppAction bodyA)
+    , [ "}"]
+    ]
   where
     indent :: [String] -> [String]
     indent xs = [ "  " ++ x | x <- xs ]
@@ -309,6 +314,7 @@ instance Show BExp where
     BAnd b1 b2 -> show b1 ++ " && " ++ show b2
     BEq v1 v2 -> show v1 ++ " == " ++ show v2
     BNe v1 v2 -> show v1 ++ " /= " ++ show v2
+    BGt v1 v2 -> show v1 ++ " > " ++ show v2
 
 instance Show VExp where
   show = \case
@@ -395,6 +401,14 @@ runActionI a = run rs0 a $ \RunState{} -> I_Done
         let VAgg (Table rs) = selectR rv1 col
         inner s rs
 
+      A_CountAgg r aggCol countCol rid bodyA -> do
+        let rv1 :: Record = evalR rm r
+        let VAgg (Table rs) = selectR rv1 aggCol
+        let rv2 = Record { schema = [countCol], fields = [ VInt (length rs) ] }
+        let rv = combineR rv1 rv2
+        run s { rm = Map.insert rid rv rm } bodyA $ \s ->
+          k s
+
 
 type HT = Map [Value] [Record]
 
@@ -408,6 +422,7 @@ evalB rm = \case
   BAnd b1 b2 -> evalB rm b1 && evalB rm b2
   BEq v1 v2 -> evalV rm v1 == evalV rm v2
   BNe v1 v2 -> evalV rm v1 /= evalV rm v2
+  BGt v1 v2 -> greaterThanV (evalV rm v1) (evalV rm v2)
 
 evalV :: RMap -> VExp -> Value
 evalV rm = \case

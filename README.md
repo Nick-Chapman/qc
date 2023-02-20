@@ -24,10 +24,10 @@ Explore query compilation via staged interpretation.
 - unique name gen when compiling to Action
 - types for record/value/boolean expressions, and record ids. +pp
 - evalAction in env mapping rid -> record(value)
+- move remaining examples to push-based-eval/compile (all except hash-join example)
 
 ## todo
+- column aware compilation; avoiding runtime tuple construction and projections
 - represent Records as Map ColName Value
-- move remaining example to push-based-eval/compile
 - simple parser for SQL -> query plan
-- staged interpreter; generated code, C?
-- types: string and ints
+- generated lower level code, C?
