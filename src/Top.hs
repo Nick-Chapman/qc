@@ -13,7 +13,14 @@ main = do
   let Config {exampleName} = parseArgs args
   let q = getExample exampleName
 
-  let canCompile = exampleName `elem` ["johns","sameSurname","dev"]
+  let canCompile = exampleName `notElem`
+        ["sameSurnameH"
+        -- these 3 need countAgg...
+        ,"partyMemberCount"
+        ,"commonName"
+        ,"commonNameAcrossParties"
+        ]
+
   if | canCompile -> do
          let a = compile q
          if exampleName == "dev" then print a else pure ()
@@ -84,12 +91,6 @@ examples = Map.fromList
        (GroupBy ["Party"] "G"
          (ScanFile mps "data/mps.csv"))))
 
-  , ("dev",
-      --project ["Party","#members"]
-      (--CountAgg "G" "#members"
-       (GroupBy ["Party"] "G"
-         (ScanFile mps "data/mps.csv"))))
-
   , ("commonName",
       project ["Forename","#Forename"]
       (Filter (PredGt (RefField "#Forename") (RefValue (VInt 6)))
@@ -153,7 +154,9 @@ schemaOfQuery = sofq
       Join subs1 subs2 -> sofq subs1 ++ sofq subs2
       HashJoin{} -> undefined -- cols1 cols2 sub1 sub2 -> do
       GroupBy cols tag _ -> cols ++ [tag]
-      ExpandAgg{} -> undefined -- aggCol sub -> do
+      ExpandAgg tag sub -> undefined $ do
+        let s = sofq sub
+        s ++ map (\x -> tag++"."++x) s  -- wrong???
       CountAgg{} -> undefined -- aggCol countCol sub -> do
 
 compile :: Query -> Action
@@ -185,11 +188,15 @@ compile q = compile s0 q $ \CompState{} r -> A_Emit r
           genRid s $ \s rid -> do
             A_NewHT hid
               (compile s sub $ \_ r -> do
-                  A_InsertHT cols r)
-              (A_ScanHT hid tag rid
+                  A_InsertHT hid cols r)
+              (A_ScanHT hid cols tag rid
                 (k s (RefR rid)))
 
-      ExpandAgg{} -> undefined -- aggCol sub -> do
+      ExpandAgg aggCol sub -> do
+        compile s sub $ \s r -> do
+          genRid s $ \s rid -> do
+            A_ExpandAgg r aggCol rid (k s (RefR rid))
+
       CountAgg{} -> undefined -- aggCol countCol sub -> do
 
 
@@ -230,8 +237,9 @@ data Action
   | A_Emit RExp
   | A_If BExp Action
   | A_NewHT HId Action Action
-  | A_InsertHT Schema RExp
-  | A_ScanHT HId ColName RId Action
+  | A_InsertHT HId Schema RExp
+  | A_ScanHT HId Schema ColName RId Action
+  | A_ExpandAgg RExp ColName RId Action
 
 data BExp
   = BAnd BExp BExp
@@ -280,10 +288,15 @@ ppAction = \case
     , ppAction aBuild
     , ppAction aScan
     ]
-  A_InsertHT schema r ->
-    [ "insertHT: " ++ show (schema,r) ]
-  A_ScanHT hid tag rid bodyA -> concat
-    [ [ "scanHT" ++ show (hid,tag) ++ " { " ++ show rid ++ " => "]
+  A_InsertHT hid cols r ->
+    [ "insertHT: " ++ show (hid,cols,r) ]
+  A_ScanHT hid cols tag rid bodyA -> concat
+    [ [ "scanHT" ++ show (hid,cols,tag) ++ " { " ++ show rid ++ " => "]
+    , indent (ppAction bodyA)
+    , [ "}"]
+    ]
+  A_ExpandAgg r col rid bodyA -> concat
+    [ [ "ExpandAgg" ++ show (r,col) ++ " { " ++ show rid ++ " => "]
     , indent (ppAction bodyA)
     , [ "}"]
     ]
@@ -318,34 +331,77 @@ instance Show HId where
 -- Action -> Interaction
 
 runActionI :: Action -> Interaction
-runActionI a = run Map.empty a I_Done
+runActionI a = run rs0 a $ \RunState{} -> I_Done
   where
-    run :: RMap -> Action -> Interaction -> Interaction
-    run rm a then_ = case a of
+    rs0 = RunState { rm = Map.empty, hm = Map.empty }
+
+    run :: RunState -> Action -> (RunState -> Interaction) -> Interaction
+    run s@RunState{rm,hm} a k = case a of
 
       A_ScanFile filename rid bodyA -> do
         I_LoadTable filename $ \(Table rs) -> do
           let
-            inner :: [Record] -> Interaction
-            inner = \case
-              [] -> then_
-              r:rs -> run (Map.insert rid r rm) bodyA (inner rs)
-          inner rs
+            inner :: RunState -> [Record] -> Interaction
+            inner s = \case
+              [] -> k s
+              r:rs -> do
+                run s { rm = Map.insert rid r rm } bodyA $ \s ->
+                  inner s rs
+          inner s rs
 
       A_Emit r ->
-        I_Print (prettyR (evalR rm r)) then_
+        I_Print (prettyR (evalR rm r)) (k s)
 
       A_If p bodyA -> do
-        if (evalB rm p) then run rm bodyA then_ else then_
+        if (evalB rm p) then run s bodyA k else k s
 
-      A_NewHT{} -> do
-        undefined
+      A_NewHT hid aBuild aScan  -> do
+        run s { hm = Map.insert hid Map.empty hm } aBuild $ \s -> do
+          run s aScan $ \s -> do
+            k s
 
-      A_InsertHT{} -> do
-        undefined
+      A_InsertHT hid cols r -> do
+        let h :: HT = maybe err id $ Map.lookup hid hm
+              where err = error (show ("no HT for insert",hid))
+        let rv :: Record = evalR rm r
+        let key :: [Value] = map (selectR rv) cols
+        let h' :: HT = Map.insertWith (++) key [rv] h
+        k s { hm = Map.insert hid h' hm }
 
-      A_ScanHT{} -> do
-        undefined
+      A_ScanHT hid cols tag rid bodyA -> do
+        let
+          inner :: RunState -> [([Value],[Record])] -> Interaction
+          inner s = \case
+            [] -> k s
+            (key,bucket):rs -> do
+              let rv = Record { schema = cols ++ [tag],
+                                fields = key ++ [VAgg (Table bucket) ] }
+              run s { rm = Map.insert rid rv rm } bodyA $ \s ->
+                inner s rs
+        let h = maybe err id $ Map.lookup hid hm
+              where err = error (show ("no HT for scan",hid))
+        inner s (Map.toList h)
+
+      A_ExpandAgg r col rid bodyA -> do
+        let rv1 :: Record = evalR rm r
+        let
+          inner :: RunState -> [Record] -> Interaction
+          inner s = \case
+            [] -> k s
+            rv2:rs -> do
+              let rv = combineR rv1 (prefixR col rv2)
+              run s { rm = Map.insert rid rv rm } bodyA $ \s ->
+                inner s rs
+        let VAgg (Table rs) = selectR rv1 col
+        inner s rs
+
+
+type HT = Map [Value] [Record]
+
+data RunState = RunState { rm :: RMap, hm :: HMap }
+
+type RMap = Map RId Record
+type HMap = Map HId HT
 
 evalB :: RMap -> BExp -> Bool
 evalB rm = \case
@@ -367,8 +423,6 @@ evalR rm = \case
   RefR rid -> do
     maybe err id $ Map.lookup rid rm
       where err = error (show ("evalR/RefR",rid))
-
-type RMap = Map RId Record
 
 ----------------------------------------------------------------------
 -- Interaction (instead of IO)
