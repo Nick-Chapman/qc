@@ -1,0 +1,22 @@
+let h1 = newHT()
+let h3 = newHT()
+scan("data/mps.csv") { r5 =>
+  insertHT: (h3,["Forename","Party"],r5)
+}
+scanHT(h3,["Forename","Party"],"FP") { r4 =>
+  CountAgg(r4,"FP","#ForenameByParty") { r5 =>
+    if(select(r5,"#ForenameByParty") > 4) {
+      insertHT: (h1,["Forename"],r5)
+    }
+  }
+}
+scanHT(h1,["Forename"],"F") { r2 =>
+  CountAgg(r2,"F","#PartiesWithThanCommonName") { r3 =>
+    if(select(r3,"#PartiesWithThanCommonName") > 1) {
+      ExpandAgg(r3,"F") { r4 =>
+        emit: rename(["Forename","F.Party","F.#ForenameByParty"],["Forename","F.Party","F.#ForenameByParty"],r4)
+      }
+    }
+  }
+}
+

@@ -1,0 +1,12 @@
+let h1 = newHT()
+scan("data/mps.csv") { r3 =>
+  insertHT: (h1,["Forename"],r3)
+}
+scanHT(h1,["Forename"],"G") { r2 =>
+  CountAgg(r2,"G","#Forename") { r3 =>
+    if(select(r3,"#Forename") > 6) {
+      emit: rename(["Forename","#Forename"],["Forename","#Forename"],r3)
+    }
+  }
+}
+

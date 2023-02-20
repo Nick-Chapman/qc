@@ -10,36 +10,50 @@ import qualified Data.Map as Map
 main :: IO ()
 main = do
   args <- getArgs
-  let Config {exampleName} = parseArgs args
+  let Config {exampleName,mode} = parseArgs args
   let q = getExample exampleName
-
-  let canCompile = exampleName `notElem` ["sameSurnameH"]
-
-  if | canCompile -> do
-         let a = compile q
-         if exampleName == "dev" then print a else pure ()
-         let s = schemaOfQuery q
-         putStrLn (intercalate "," s)
-         runI (runActionI a)
-         pure ()
-
-     | otherwise -> do
-         t <- evalQI q
-         putStr (prettyT t)
+  case mode of
+    Interpret -> do
+      t <- evalQI q
+      putStr (prettyT t)
+    CompileAndPrint -> do
+      let a = compile q
+      print a
+    CompileAndRun -> do
+      let a = compile q
+      let s = schemaOfQuery q
+      putStrLn (intercalate "," s)
+      runI (runActionI a)
+    CompilePrintAndRun -> do
+      let a = compile q
+      print a
+      let s = schemaOfQuery q
+      putStrLn (intercalate "," s)
+      runI (runActionI a)
   where
     getExample :: String -> Query
     getExample x = maybe (error ("no example: "++ x)) id $ Map.lookup x examples
 
-data Config = Config { exampleName :: String }
+data Config = Config { mode :: Mode, exampleName :: String }
+
+data Mode = Interpret | CompileAndRun | CompileAndPrint | CompilePrintAndRun
 
 parseArgs :: [String] -> Config
-parseArgs args = do
-  case args of
-    [] -> Config { exampleName = default_exampleName}
-    [exampleName] -> Config { exampleName }
-    _ -> error (show ("args",args))
+parseArgs = loop Config { mode = CompilePrintAndRun
+                        , exampleName = "commonName"
+                        }
   where
-    default_exampleName = "dev"
+    loop :: Config -> [String] -> Config
+    loop acc = \case
+      [] -> acc
+      "--interpret":xs -> loop acc { mode = Interpret } xs
+      "--compile-and-run":xs -> loop acc { mode = CompileAndRun } xs
+      "--compile-and-print":xs -> loop acc { mode = CompileAndPrint } xs
+      "--compile-print-and-run":xs -> loop acc { mode = CompilePrintAndRun } xs
+      flag@('-':_):_ -> do
+        error (show ("unknown flag",flag))
+      x:xs -> do
+        loop acc { exampleName = x } xs
 
 ----------------------------------------------------------------------
 -- example queries
@@ -80,12 +94,6 @@ examples = Map.fromList
           (projectPrefix "S" ["Forename","Surname","Party"] (ScanFile mps "data/mps.csv")))))
 
   , ("partyMemberCount",
-      project ["Party","#members"]
-      (CountAgg "G" "#members"
-       (GroupBy ["Party"] "G"
-         (ScanFile mps "data/mps.csv"))))
-
-  , ("dev",
       project ["Party","#members"]
       (CountAgg "G" "#members"
        (GroupBy ["Party"] "G"
@@ -272,7 +280,7 @@ instance Show Action where
 ppAction :: Action -> [String]
 ppAction = \case
   A_ScanFile filename rid bodyA -> concat
-    [ [ "scan(" ++ show filename ++ ") { " ++ show rid ++ " => "]
+    [ [ "scan(" ++ show filename ++ ") { " ++ show rid ++ " =>"]
     , indent (ppAction bodyA)
     , [ "}"]
     ]
@@ -291,17 +299,17 @@ ppAction = \case
   A_InsertHT hid cols r ->
     [ "insertHT: " ++ show (hid,cols,r) ]
   A_ScanHT hid cols tag rid bodyA -> concat
-    [ [ "scanHT" ++ show (hid,cols,tag) ++ " { " ++ show rid ++ " => "]
+    [ [ "scanHT" ++ show (hid,cols,tag) ++ " { " ++ show rid ++ " =>"]
     , indent (ppAction bodyA)
     , [ "}"]
     ]
   A_ExpandAgg r col rid bodyA -> concat
-    [ [ "ExpandAgg" ++ show (r,col) ++ " { " ++ show rid ++ " => "]
+    [ [ "ExpandAgg" ++ show (r,col) ++ " { " ++ show rid ++ " =>"]
     , indent (ppAction bodyA)
     , [ "}"]
     ]
   A_CountAgg r aggCol countCol rid bodyA -> concat
-    [ [ "CountAgg" ++ show (r,aggCol,countCol) ++ " { " ++ show rid ++ " => "]
+    [ [ "CountAgg" ++ show (r,aggCol,countCol) ++ " { " ++ show rid ++ " =>"]
     , indent (ppAction bodyA)
     , [ "}"]
     ]

@@ -1,0 +1,10 @@
+let h1 = newHT()
+scan("data/mps.csv") { r3 =>
+  insertHT: (h1,["Party"],r3)
+}
+scanHT(h1,["Party"],"G") { r2 =>
+  CountAgg(r2,"G","#members") { r3 =>
+    emit: rename(["Party","#members"],["Party","#members"],r3)
+  }
+}
+

@@ -1,0 +1,8 @@
+scan("data/mps.csv") { r1 =>
+  scan("data/mps.csv") { r2 =>
+    if(select(combine(rename(["Forename","Surname","Party"],["R.Forename","R.Surname","R.Party"],r1),rename(["Forename","Surname","Party"],["S.Forename","S.Surname","S.Party"],r2)),"R.Surname") == select(combine(rename(["Forename","Surname","Party"],["R.Forename","R.Surname","R.Party"],r1),rename(["Forename","Surname","Party"],["S.Forename","S.Surname","S.Party"],r2)),"S.Surname") && select(combine(rename(["Forename","Surname","Party"],["R.Forename","R.Surname","R.Party"],r1),rename(["Forename","Surname","Party"],["S.Forename","S.Surname","S.Party"],r2)),"R.Forename") /= select(combine(rename(["Forename","Surname","Party"],["R.Forename","R.Surname","R.Party"],r1),rename(["Forename","Surname","Party"],["S.Forename","S.Surname","S.Party"],r2)),"S.Forename")) {
+      emit: rename(["R.Surname","R.Forename","S.Forename","R.Party","S.Party"],["R.Surname","R.Forename","S.Forename","R.Party","S.Party"],combine(rename(["Forename","Surname","Party"],["R.Forename","R.Surname","R.Party"],r1),rename(["Forename","Surname","Party"],["S.Forename","S.Surname","S.Party"],r2)))
+    }
+  }
+}
+

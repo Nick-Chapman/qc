@@ -1,0 +1,6 @@
+scan("data/mps.csv") { r1 =>
+  if("John" == select(r1,"Forename")) {
+    emit: rename(["Forename","Surname","Party"],["Forename","Surname","Party"],r1)
+  }
+}
+

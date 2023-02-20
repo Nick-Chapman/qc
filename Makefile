@@ -1,16 +1,22 @@
 
-examples = johns sameSurname sameSurnameH johnsByParty partyMemberCount commonName commonNameAcrossParties
+examples = johns sameSurname johnsByParty partyMemberCount commonName commonNameAcrossParties
+# sameSurnameH -- hash join example disabled
 
-outputs = $(patsubst %,_out/%.csv,$(examples))
+compileOutputs = $(patsubst %,_out/%.code,$(examples))
+cvsOutputs = $(patsubst %,_out/%.csv,$(examples))
 
-top: $(outputs) diff
+top: $(compileOutputs) $(cvsOutputs) diff
 
 diff:
 	git diff _out
 
-_out/%.csv: .build Makefile data/mps.csv
-	@ echo 'Generating $@'
-	@ ./run.sh $(patsubst _out/%.csv,%,$@) > $@ || rm $@
+_out/%.code: .build Makefile data/mps.csv ./run.sh
+	@ echo 'Generating Code $@'
+	@ ./run.sh --compile-and-print $(patsubst _out/%.code,%,$@) > $@ || rm $@
+
+_out/%.csv: .build Makefile data/mps.csv ./run.sh
+	@ echo 'Generating CSV $@'
+	@ ./run.sh --compile-and-run $(patsubst _out/%.csv,%,$@) > $@ || rm $@
 
 .build: src/*.hs Makefile
 	stack build

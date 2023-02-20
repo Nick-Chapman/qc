@@ -1,0 +1,12 @@
+let h1 = newHT()
+scan("data/mps.csv") { r3 =>
+  if("John" == select(r3,"Forename")) {
+    insertHT: (h1,["Party"],rename(["Forename","Surname","Party"],["Forename","Surname","Party"],r3))
+  }
+}
+scanHT(h1,["Party"],"G") { r2 =>
+  ExpandAgg(r2,"G") { r3 =>
+    emit: rename(["Party","G.Surname"],["Party","G.Surname"],r3)
+  }
+}
+
