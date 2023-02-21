@@ -21,14 +21,12 @@ main = do
       print a
     CompileAndRun -> do
       let a = compile q
-      let s = schemaOfQuery q
-      print s
+      putStrLn (prettyCols (unSchema (schemaOfQuery q)))
       runI (runActionI a)
     CompilePrintAndRun -> do
       let a = compile q
       print a
-      let s = schemaOfQuery q
-      print s
+      putStrLn (prettyCols (unSchema (schemaOfQuery q)))
       runI (runActionI a)
   where
     getExample :: String -> Query
@@ -126,7 +124,7 @@ examples = Map.fromList
 
   -- Based on same surname example, but with a final filter.
   -- "who has the same surname as a John?"
-  , ("dev",
+  , ("dev1",
       ProjectAs ["S.Forename"
                 ,"R.Surname" -- S.Surname would be bug; field projected away.
                 ] ["Forename","Surname"]
@@ -140,6 +138,14 @@ examples = Map.fromList
            (projectPrefix "R" ["Forename","Surname","Party"] (ScanFile mps "data/mps.csv"))
            (projectPrefix "S" ["Forename","Surname","Party"] (ScanFile mps "data/mps.csv")))))))
 
+  , ("dev", -- based on johnsByParty, with final project removed
+      --project ["Party","G.Surname"]
+      (ExpandAgg "G"
+       (GroupBy ["Party"] "G"
+        (project ["Forename","Surname","Party"]
+         (Filter (PredEq (RefValue (VString "John")) (RefField "Forename"))
+          (ScanFile mps "data/mps.csv"))))))
+
   ]
 
   where
@@ -149,13 +155,13 @@ examples = Map.fromList
     projectPrefix :: String -> [ColName] -> Query -> Query
     projectPrefix tag cols = ProjectAs cols [ tag++"."++col | col <- cols ]
 
-    mps = mkSchema ["Forename","Surname","Name (Display as)","Name (List as)","Party","Constituency","Email","Address 1","Address 2","Postcode"]
+    mps = ["Forename","Surname","Name (Display as)","Name (List as)","Party","Constituency","Email","Address 1","Address 2","Postcode"]
 
 ----------------------------------------------------------------------
 -- query language
 
 data Query
-  = ScanFile Schema FilePath -- carry schema to avoid file read at compile time
+  = ScanFile [ColName] FilePath
   | ProjectAs [ColName] [ColName] Query
   | Filter Pred Query
   | Join Query Query
@@ -183,13 +189,17 @@ schemaOfQuery = sofq
   where
     sofq :: Query -> Schema
     sofq = \case
-      ScanFile sc _ -> sc
+      ScanFile sc _ -> mkSchema sc
       ProjectAs _ out _ -> mkSchema out
       Filter _ sub -> sofq sub
-      Join subs1 subs2 -> combineSchema (sofq subs1) (sofq subs2)
-      HashJoin{} -> undefined -- cols1 cols2 sub1 sub2 -> do
-      GroupBy cols tag _ -> mkSchema (cols ++ [tag])
-      ExpandAgg _tag _sub -> undefined
+      Join subs1 subs2 ->
+        combineSchema (sofq subs1) (sofq subs2)
+      HashJoin{} ->
+        undefined -- cols1 cols2 sub1 sub2 -> do
+      GroupBy cols tag sub ->
+        combineSchema (mkSchema cols) (mkSubSchema tag (sofq sub))
+      ExpandAgg col sub ->
+        expandAggSchema col (sofq sub)
       CountAgg _aggCol countCol sub ->
         combineSchema (sofq sub) (mkSchema [countCol])
 
@@ -417,7 +427,7 @@ runActionI a = run rs0 a $ \RunState{} -> I_Done
             [] -> k s
             (key,bucket):rs -> do
               let rv = mkRecord (cols ++ [tag])
-                                (key ++ [VAgg (Table undefined bucket) ]) -- TODO
+                                (key ++ [VAgg (Table undefined bucket) ]) -- TODO: can this undefined be provoked?
               run s { rm = Map.insert rid rv rm } bodyA $ \s ->
                 inner s rs
         let h = maybe err id $ Map.lookup hid hm
@@ -591,12 +601,12 @@ groupBy cols tag (Table _sc rs) = do
         | r <- rs
         , let key = map (selectR r) cols
         ]
-  mkTable (cols ++ [tag])
-    [ k ++ [VAgg (Table undefined rs)] | (k,rs) <- Map.toList m1 ]
+  mkTable (combineSchema (mkSchema cols) (mkSubSchema tag _sc))
+    [ k ++ [VAgg (Table undefined rs)] | (k,rs) <- Map.toList m1 ]  -- TODO: can this undefined be provoked?
 
 expandAgg :: ColName -> Table -> Table
-expandAgg aggCol (Table _sc1 rs1) = do
-  Table undefined $ -- TODO: need static/structured schema to know this
+expandAgg aggCol (Table sc1 rs1) = do
+  Table (expandAggSchema aggCol sc1) $
     [ combineR r1 (prefixR aggCol r2)
     | r1 <- rs1
     , let VAgg (Table _sc2 rs2) = selectR r1 aggCol
@@ -612,10 +622,11 @@ countAgg aggCol countCol (Table sc1 rs1) = do
     , let rCount = mkRecord [countCol] [ VInt (length rs2) ]
     ]
 
-mkTable :: [ColName] -> [[Value]] -> Table
-mkTable cols vss = do
+mkTable :: Schema  -> [[Value]] -> Table
+mkTable schema vss = do
+  let cols = unSchema schema
   let n = length cols
-  Table (mkSchema cols) [ mkRecord cols (checkLength n vs) | vs <- vss ]
+  Table schema [ mkRecord cols (checkLength n vs) | vs <- vss ]
 
 checkLength :: Show a => Int -> [a] -> [a]
 checkLength n xs =
@@ -671,7 +682,7 @@ instance Show Value where
 
 prettyT :: Table -> String
 prettyT (Table sc rs) =
-  intercalate "," (unSchema sc) ++ "\n"
+  prettyCols (unSchema sc) ++ "\n"
   ++ case rs of
        [] -> "*empty table*"
        rs -> unlines [ prettyR sc r | r <- rs ]
@@ -680,23 +691,56 @@ prettyR :: Schema -> Record -> String
 prettyR sc r =
   intercalate "," [ show (selectR r c) | c <- unSchema sc ]
 
+prettyCols :: [ColName] -> String
+prettyCols cols = intercalate "," cols
+
 ----------------------------------------------------------------------
 -- schema
 
-data Schema = Schema [ColName] deriving (Eq,Ord)
+data Schema = Schema [(ColName,Type)]
+  deriving (Eq,Ord)
+
 type ColName = String
 
+data Type = TString | TSchema Schema
+  deriving (Eq,Ord)
+
+
+mkSubSchema :: ColName -> Schema -> Schema
+mkSubSchema c s = Schema [(c,TSchema s)]
+
+expandAggSchema :: ColName -> Schema -> Schema
+expandAggSchema col sc =
+  combineSchema sc (prefixSchema col (unfoldSubScheme sc col))
+
+unfoldSubScheme :: Schema -> ColName -> Schema
+unfoldSubScheme (Schema xs) c =
+  the "unfoldSubScheme" [ unfold sc | (c',sc) <- xs, c==c' ]
+  where
+    unfold = \case
+      TSchema sc -> sc
+      TString -> error "unfold"
+
+prefixSchema :: String -> Schema -> Schema
+prefixSchema tag (Schema xs) =
+  Schema [ (tag++"."++c, t) | (c,t) <- xs ]
+
 unSchema :: Schema -> [ColName]
-unSchema (Schema xs) = xs
+unSchema (Schema xs) = [ c | (c,_) <- xs ]
 
 mkSchema :: [ColName] -> Schema
-mkSchema = Schema
+mkSchema cs = Schema [ (c,TString) | c <- cs ]
 
 combineSchema :: Schema -> Schema -> Schema
 combineSchema (Schema cs1) (Schema cs2) = Schema (cs1 ++ cs2)
 
 instance Show Schema where
-  show (Schema cs) = intercalate "," cs
+  show (Schema cs) = "<" ++ intercalate "," (map show cs) ++ ">"
+
+instance Show Type where
+  show = \case
+    TString -> "*"
+    TSchema sc -> show sc
 
 ----------------------------------------------------------------------
 -- parsing tables from CVS
@@ -708,9 +752,9 @@ parseCVS :: String -> Table
 parseCVS = parse table
   where
     table = do
-      sc <- separated (lit ',') word; nl
+      cols <- separated (lit ',') word; nl
       vss <- terminated nl record
-      pure $ mkTable sc vss
+      pure $ mkTable (mkSchema cols) vss
 
     record = map VString <$> separated (lit ',') word
 
@@ -730,5 +774,5 @@ parseCVS = parse table
 ----------------------------------------------------------------------
 -- misc
 
---the :: Show a => String -> [a] -> a
---the who = \case [a] -> a; as -> error (show ("the",who,as))
+the :: Show a => String -> [a] -> a
+the who = \case [a] -> a; as -> error (show ("the",who,as))
