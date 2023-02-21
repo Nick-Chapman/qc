@@ -40,7 +40,7 @@ data Mode = Interpret | CompileAndRun | CompileAndPrint | CompilePrintAndRun
 
 parseArgs :: [String] -> Config
 parseArgs = loop Config { mode = CompilePrintAndRun
-                        , exampleName = "commonName"
+                        , exampleName = "dev"
                         }
   where
     loop :: Config -> [String] -> Config
@@ -116,6 +116,23 @@ examples = Map.fromList
             (CountAgg "FP" "#ForenameByParty"
              (GroupBy ["Forename","Party"] "FP"
               (ScanFile mps "data/mps.csv")))))))))
+
+  -- Based on same surname example, but with a final filter.
+  -- "who has the same surname as a John?"
+  , ("dev",
+      ProjectAs ["S.Forename"
+                ,"R.Surname" -- S.Surname would be bug; field projected away.
+                ] ["Forename","Surname"]
+      (Filter (PredEq (RefField "R.Forename") (RefValue (VString "John")))
+        (project ["R.Surname","R.Forename","S.Forename","R.Party","S.Party"]
+        (Filter
+         (PredAnd
+          (PredEq (RefField "R.Surname") (RefField "S.Surname"))
+          (PredNe (RefField "R.Forename") (RefField "S.Forename")))
+         (Join
+           (projectPrefix "R" ["Forename","Surname","Party"] (ScanFile mps "data/mps.csv"))
+           (projectPrefix "S" ["Forename","Surname","Party"] (ScanFile mps "data/mps.csv")))))))
+
   ]
 
   where
