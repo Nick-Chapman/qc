@@ -257,7 +257,7 @@ compileRef r = \case
 
 data Action
   = A_ScanFile FilePath RId Action
-  | A_Emit RExp
+  | A_Emit RExp -- TODO: need to knw scheme here
   | A_If BExp Action
   | A_NewHT HId Action Action
   | A_InsertHT HId Schema RExp
@@ -370,7 +370,7 @@ runActionI a = run rs0 a $ \RunState{} -> I_Done
     run s@RunState{rm,hm} a k = case a of
 
       A_ScanFile filename rid bodyA -> do
-        I_LoadTable filename $ \(Table rs) -> do
+        I_LoadTable filename $ \(Table _sc rs) -> do
           let
             inner :: RunState -> [Record] -> Interaction
             inner s = \case
@@ -381,7 +381,8 @@ runActionI a = run rs0 a $ \RunState{} -> I_Done
           inner s rs
 
       A_Emit r ->
-        I_Print (prettyR (evalR rm r)) (k s)
+        -- TODO: need to know the schema here!
+        I_Print (prettyR (error "help!") (evalR rm r)) (k s)
 
       A_If p bodyA -> do
         if (evalB rm p) then run s bodyA k else k s
@@ -405,8 +406,8 @@ runActionI a = run rs0 a $ \RunState{} -> I_Done
           inner s = \case
             [] -> k s
             (key,bucket):rs -> do
-              let rv = Record { schema = cols ++ [tag],
-                                fields = key ++ [VAgg (Table bucket) ] }
+              let rv = mkRecord (cols ++ [tag])
+                                (key ++ [VAgg (Table undefined bucket) ])
               run s { rm = Map.insert rid rv rm } bodyA $ \s ->
                 inner s rs
         let h = maybe err id $ Map.lookup hid hm
@@ -423,13 +424,13 @@ runActionI a = run rs0 a $ \RunState{} -> I_Done
               let rv = combineR rv1 (prefixR col rv2)
               run s { rm = Map.insert rid rv rm } bodyA $ \s ->
                 inner s rs
-        let VAgg (Table rs) = selectR rv1 col
+        let VAgg (Table _sc rs) = selectR rv1 col
         inner s rs
 
       A_CountAgg r aggCol countCol rid bodyA -> do
         let rv1 :: Record = evalR rm r
-        let VAgg (Table rs) = selectR rv1 aggCol
-        let rv2 = Record { schema = [countCol], fields = [ VInt (length rs) ] }
+        let VAgg (Table _sc rs) = selectR rv1 aggCol
+        let rv2 = mkRecord [countCol] [ VInt (length rs) ]
         let rv = combineR rv1 rv2
         run s { rm = Map.insert rid rv rm } bodyA $ \s ->
           k s
@@ -546,18 +547,18 @@ getIntV = \case
 -- table operations
 
 crossProductT :: Table -> Table -> Table
-crossProductT (Table rs1) (Table rs2) =
-  Table [ combineR r1 r2 | r1 <- rs1, r2 <- rs2 ]
+crossProductT (Table _sc1 rs1) (Table _sc2 rs2) =
+  Table undefined [ combineR r1 r2 | r1 <- rs1, r2 <- rs2 ]
 
 hashJoinTables :: Schema -> Schema -> Table -> Table -> Table
-hashJoinTables cols1 cols2 (Table rs1) (Table rs2) = do
+hashJoinTables cols1 cols2 (Table _sc1 rs1) (Table _sc2 rs2) = do
   let m1 :: Map [Value] [Record] =
         Map.fromListWith (++)
         [ (key, [r1])
         | r1 <- rs1
         , let key = map (selectR r1) cols1
         ]
-  Table $
+  Table undefined $
     [ combineR r1 r2
     | r2 <- rs2
     , let key = map (selectR r2) cols2
@@ -565,15 +566,15 @@ hashJoinTables cols1 cols2 (Table rs1) (Table rs2) = do
     ]
 
 filterT :: (Record -> Bool) -> Table -> Table
-filterT pred (Table rs) =
-  Table [ r | r <- rs, pred r ]
+filterT pred (Table _sc rs) =
+  Table undefined [ r | r <- rs, pred r ]
 
 renameT :: Schema -> Schema -> Table -> Table
-renameT inp out (Table rs) =
-  Table [ renameR inp out r | r <- rs ]
+renameT inp out (Table _sc rs) =
+  Table out [ renameR inp out r | r <- rs ]
 
 groupBy :: Schema -> ColName -> Table -> Table
-groupBy cols tag (Table rs) = do
+groupBy cols tag (Table _sc rs) = do
   let _m1 :: Map [Value] [Record] =
         Map.fromListWith (++)
         [ (key, [r])
@@ -581,54 +582,71 @@ groupBy cols tag (Table rs) = do
         , let key = map (selectR r) cols
         ]
   mkTable (cols ++ [tag])
-    [ k ++ [VAgg (Table rs)] | (k,rs) <- Map.toList _m1 ]
+    [ k ++ [VAgg (Table undefined rs)] | (k,rs) <- Map.toList _m1 ]
 
 expandAgg :: ColName -> Table -> Table
-expandAgg aggCol (Table rs1) = do
-  Table $
+expandAgg aggCol (Table _sc1 rs1) = do
+  Table undefined $
     [ combineR r1 (prefixR aggCol r2)
     | r1 <- rs1
-    , let VAgg (Table rs2) = selectR r1 aggCol
+    , let VAgg (Table _sc2 rs2) = selectR r1 aggCol
     , r2 <- rs2
     ]
 
 countAgg :: ColName -> ColName -> Table -> Table
-countAgg aggCol countCol (Table rs1) = do
-  Table $
+countAgg aggCol countCol (Table _sc1 rs1) = do
+  Table undefined $
     [ combineR r1 rCount
     | r1 <- rs1
-    , let VAgg (Table rs2) = selectR r1 aggCol
-    , let rCount = Record { schema = [countCol], fields = [ VInt (length rs2) ] }
+    , let VAgg (Table _sc2 rs2) = selectR r1 aggCol
+    , let rCount = mkRecord [countCol] [ VInt (length rs2) ]
     ]
+
+mkTable :: Schema -> [[Value]] -> Table
+mkTable schema vss = do
+  let n = length schema
+  Table undefined [ mkRecord schema (checkLength n vs)
+           | vs <- vss ]
+
+checkLength :: Show a => Int -> [a] -> [a]
+checkLength n xs =
+  if (length xs == n) then xs else
+    error (show ("checkLength: expected",n,"got",length xs,xs))
 
 ----------------------------------------------------------------------
 -- record operations
 
 prefixR :: String -> Record -> Record
-prefixR tag r@Record{schema} =
-  renameR schema (map (\x -> tag++"."++x) schema) r
+prefixR tag (Record m) =
+  Record (Map.mapKeys (\k -> tag++"."++k) m)
 
 renameR :: Schema -> Schema -> Record -> Record
 renameR inp out r =
-  Record { fields = map (selectR r) inp, schema=out }
+  mkRecord out (map (selectR r) inp)
 
 selectR :: Record -> ColName -> Value
-selectR Record{fields,schema} col =
-  the who [ v | (c,v) <- zip schema fields, c==col ]
-  where who = (show ("select",col,schema))
+selectR (Record m) col = do
+  maybe err id $ Map.lookup col m
+    where err = error (show ("select",col,Map.keys m))
 
 combineR :: Record -> Record -> Record
-combineR Record{fields=f1,schema=s1} Record{fields=f2,schema=s2} =
-  Record{fields=f1++f2, schema=s1++s2}
+combineR (Record m1) (Record m2) =
+  Record (Map.union m1 m2) -- left biased for duplicate keys
 
 ----------------------------------------------------------------------
 -- values
 
-data Table = Table [Record]
+-- TODO: many places in code construct Table with undefined schema
+-- make these provoke errors and fix
+-- Think this is only an interpreter issue
+data Table = Table Schema [Record]
   deriving (Eq,Ord)
 
-data Record = Record { fields :: [Value], schema :: Schema }
+data Record = Record (Map ColName Value)
   deriving (Eq,Ord,Show)
+
+mkRecord :: Schema -> [Value] -> Record
+mkRecord cs vs = Record (Map.fromList (zip cs vs))
 
 type Schema = [ColName]
 type ColName = String
@@ -646,20 +664,18 @@ instance Show Value where
   show = \case
     VString s -> show s
     VInt n -> show n
-    VAgg (Table rs) -> printf "[table:size=%d]" (length rs)
+    VAgg (Table _sc rs) -> printf "[table:size=%d]" (length rs)
 
 prettyT :: Table -> String
-prettyT tab@(Table rs) = case rs of
-   [] -> "*empty table*"
-   r@Record{schema=sc1}:rs -> do
-     if (not (all (== sc1) [ sc2 | Record {schema=sc2} <- rs ]))
-       then error (show ( "pretty",tab)) else do
-       intercalate "," sc1 ++ "\n"
-         ++ unlines [ intercalate "," (map show fields) | Record {fields} <- r:rs ]
+prettyT (Table sc rs) =
+  intercalate "," sc ++ "\n"
+  ++ case rs of
+       [] -> "*empty table*"
+       rs -> unlines [ prettyR sc r | r <- rs ]
 
-prettyR :: Record -> String
-prettyR Record{fields} =
-  intercalate "," (map show fields)
+prettyR :: Schema -> Record -> String
+prettyR cols r =
+  intercalate "," [ show (selectR r c) | c <- cols ]
 
 ----------------------------------------------------------------------
 -- parsing tables from CVS
@@ -693,17 +709,5 @@ parseCVS = parse table
 ----------------------------------------------------------------------
 -- misc
 
-mkTable :: Schema -> [[Value]] -> Table
-mkTable schema vss = do
-  let n = length schema
-  Table [ Record { fields = checkLength n vs
-                 , schema }
-        | vs <- vss ]
-
-checkLength :: Show a => Int -> [a] -> [a]
-checkLength n xs =
-  if (length xs == n) then xs else
-    error (show ("checkLength: expected",n,"got",length xs,xs))
-
-the :: Show a => String -> [a] -> a
-the who = \case [a] -> a; as -> error (show ("the",who,as))
+--the :: Show a => String -> [a] -> a
+--the who = \case [a] -> a; as -> error (show ("the",who,as))
