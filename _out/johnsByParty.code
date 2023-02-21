@@ -1,7 +1,7 @@
 let h1 = newHT()
-scan("data/mps.csv") { r3 =>
-  if("John" == select(r3,"Forename")) {
-    insertHT: (h1,["Party"],rename(["Forename","Surname","Party"],["Forename","Surname","Party"],r3))
+scan("data/mps.csv") { r2 =>
+  if("John" == select(r2,"Forename")) {
+    insertHT: (h1,["Party"],rename(["Forename","Surname","Party"],["Forename","Surname","Party"],r2))
   }
 }
 scanHT(h1,["Party"],"G") { r2 =>

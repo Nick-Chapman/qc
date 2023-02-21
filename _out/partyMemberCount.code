@@ -1,6 +1,6 @@
 let h1 = newHT()
-scan("data/mps.csv") { r3 =>
-  insertHT: (h1,["Party"],r3)
+scan("data/mps.csv") { r2 =>
+  insertHT: (h1,["Party"],r2)
 }
 scanHT(h1,["Party"],"G") { r2 =>
   CountAgg(r2,"G","#members") { r3 =>

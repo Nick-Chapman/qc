@@ -211,12 +211,12 @@ compile q = compile s0 q $ \CompState{} r -> A_Emit r
 
       GroupBy cols tag sub -> do
         genHid s $ \s hid -> do
-          genRid s $ \s rid -> do
-            A_NewHT hid
-              (compile s sub $ \_ r -> do
-                  A_InsertHT hid cols r)
-              (A_ScanHT hid cols tag rid
-                (k s (RefR rid)))
+          A_NewHT hid
+            (compile s sub $ \_ r -> do
+                A_InsertHT hid cols r)
+            (genRid s $ \s rid -> do
+                (A_ScanHT hid cols tag rid
+                 (k s (RefR rid))))
 
       ExpandAgg aggCol sub -> do
         compile s sub $ \s r -> do

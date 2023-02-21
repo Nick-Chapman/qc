@@ -1,12 +1,12 @@
 let h1 = newHT()
-let h3 = newHT()
-scan("data/mps.csv") { r5 =>
-  insertHT: (h3,["Forename","Party"],r5)
+let h2 = newHT()
+scan("data/mps.csv") { r3 =>
+  insertHT: (h2,["Forename","Party"],r3)
 }
-scanHT(h3,["Forename","Party"],"FP") { r4 =>
-  CountAgg(r4,"FP","#ForenameByParty") { r5 =>
-    if(select(r5,"#ForenameByParty") > 4) {
-      insertHT: (h1,["Forename"],r5)
+scanHT(h2,["Forename","Party"],"FP") { r3 =>
+  CountAgg(r3,"FP","#ForenameByParty") { r4 =>
+    if(select(r4,"#ForenameByParty") > 4) {
+      insertHT: (h1,["Forename"],r4)
     }
   }
 }
