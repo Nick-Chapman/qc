@@ -193,8 +193,10 @@ schemaOfQuery = sofq
         sofq sub ++ [countCol]
 
 compile :: Query -> Action
-compile q = compile s0 q $ \CompState{} r -> A_Emit r
+compile q = compile s0 q $ \CompState{} r -> A_Emit schema r
   where
+    schema = schemaOfQuery q
+
     s0 = CompState { u = 1 }
 
     compile :: CompState -> Query -> (CompState -> RExp -> Action) -> Action
@@ -264,7 +266,7 @@ compileRef r = \case
 
 data Action
   = A_ScanFile FilePath RId Action
-  | A_Emit RExp -- TODO: need to knw scheme here
+  | A_Emit Schema RExp
   | A_If BExp Action
   | A_NewHT HId Action Action
   | A_InsertHT HId Schema RExp
@@ -308,8 +310,8 @@ ppAction = \case
     , indent (ppAction bodyA)
     , [ "}"]
     ]
-  A_Emit r ->
-    [ "emit: " ++ show r ]
+  A_Emit _sc r ->
+    [ "emit: " ++ show r ] -- TODO: show schema?
   A_If p bodyA -> concat
     [ [ "if(" ++ show p ++ ") {" ]
     , indent (ppAction bodyA)
@@ -387,9 +389,9 @@ runActionI a = run rs0 a $ \RunState{} -> I_Done
                   inner s rs
           inner s rs
 
-      A_Emit r ->
+      A_Emit schema r ->
         -- TODO: need to know the schema here!
-        I_Print (prettyR undefined (evalR rm r)) (k s)
+        I_Print (prettyR schema (evalR rm r)) (k s)
 
       A_If p bodyA -> do
         if (evalB rm p) then run s bodyA k else k s
