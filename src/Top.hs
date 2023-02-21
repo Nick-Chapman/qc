@@ -22,13 +22,13 @@ main = do
     CompileAndRun -> do
       let a = compile q
       let s = schemaOfQuery q
-      putStrLn (intercalate "," s)
+      print s
       runI (runActionI a)
     CompilePrintAndRun -> do
       let a = compile q
       print a
       let s = schemaOfQuery q
-      putStrLn (intercalate "," s)
+      print s
       runI (runActionI a)
   where
     getExample :: String -> Query
@@ -143,21 +143,24 @@ examples = Map.fromList
   ]
 
   where
-    project sc = ProjectAs sc sc
-    projectPrefix tag sc = ProjectAs sc [ tag++"."++col | col <- sc ]
+    project :: [ColName] -> Query -> Query
+    project cols = ProjectAs cols cols
 
-    mps = ["Forename","Surname","Name (Display as)","Name (List as)","Party","Constituency","Email","Address 1","Address 2","Postcode"]
+    projectPrefix :: String -> [ColName] -> Query -> Query
+    projectPrefix tag cols = ProjectAs cols [ tag++"."++col | col <- cols ]
+
+    mps = mkSchema ["Forename","Surname","Name (Display as)","Name (List as)","Party","Constituency","Email","Address 1","Address 2","Postcode"]
 
 ----------------------------------------------------------------------
 -- query language
 
 data Query
   = ScanFile Schema FilePath -- carry schema to avoid file read at compile time
-  | ProjectAs Schema Schema Query
+  | ProjectAs [ColName] [ColName] Query
   | Filter Pred Query
   | Join Query Query
-  | HashJoin Schema Schema Query Query
-  | GroupBy Schema ColName Query
+  | HashJoin [ColName] [ColName] Query Query
+  | GroupBy [ColName] ColName Query
   | ExpandAgg ColName Query
   | CountAgg ColName ColName Query
   deriving Show
@@ -181,16 +184,14 @@ schemaOfQuery = sofq
     sofq :: Query -> Schema
     sofq = \case
       ScanFile sc _ -> sc
-      ProjectAs _ out _ -> out
+      ProjectAs _ out _ -> mkSchema out
       Filter _ sub -> sofq sub
-      Join subs1 subs2 -> sofq subs1 ++ sofq subs2
+      Join subs1 subs2 -> combineSchema (sofq subs1) (sofq subs2)
       HashJoin{} -> undefined -- cols1 cols2 sub1 sub2 -> do
-      GroupBy cols tag _ -> cols ++ [tag]
-      ExpandAgg tag sub -> undefined $ do
-        let s = sofq sub
-        s ++ map (\x -> tag++"."++x) s  -- wrong???
+      GroupBy cols tag _ -> mkSchema (cols ++ [tag])
+      ExpandAgg _tag _sub -> undefined
       CountAgg _aggCol countCol sub ->
-        sofq sub ++ [countCol]
+        combineSchema (sofq sub) (mkSchema [countCol])
 
 compile :: Query -> Action
 compile q = compile s0 q $ \CompState{} r -> A_Emit schema r
@@ -269,8 +270,8 @@ data Action
   | A_Emit Schema RExp
   | A_If BExp Action
   | A_NewHT HId Action Action
-  | A_InsertHT HId Schema RExp
-  | A_ScanHT HId Schema ColName RId Action
+  | A_InsertHT HId [ColName] RExp
+  | A_ScanHT HId [ColName] ColName RId Action
   | A_ExpandAgg RExp ColName RId Action
   | A_CountAgg RExp ColName ColName RId Action
 
@@ -286,7 +287,7 @@ data VExp
 
 data RExp
   = CombineR RExp RExp
-  | RenameR Schema Schema RExp
+  | RenameR [ColName] [ColName] RExp
   | RefR RId
 
 data RId
@@ -557,9 +558,9 @@ getIntV = \case
 
 crossProductT :: Table -> Table -> Table
 crossProductT (Table sc1 rs1) (Table sc2 rs2) =
-  Table (sc1++sc2) [ combineR r1 r2 | r1 <- rs1, r2 <- rs2 ]
+  Table (combineSchema sc1 sc2) [ combineR r1 r2 | r1 <- rs1, r2 <- rs2 ]
 
-hashJoinTables :: Schema -> Schema -> Table -> Table -> Table
+hashJoinTables :: [ColName] -> [ColName] -> Table -> Table -> Table
 hashJoinTables cols1 cols2 (Table sc1 rs1) (Table sc2 rs2) = do
   let m1 :: Map [Value] [Record] =
         Map.fromListWith (++)
@@ -567,7 +568,7 @@ hashJoinTables cols1 cols2 (Table sc1 rs1) (Table sc2 rs2) = do
         | r1 <- rs1
         , let key = map (selectR r1) cols1
         ]
-  Table (sc1++sc2) $
+  Table (combineSchema sc1 sc2) $
     [ combineR r1 r2
     | r2 <- rs2
     , let key = map (selectR r2) cols2
@@ -578,11 +579,11 @@ filterT :: (Record -> Bool) -> Table -> Table
 filterT pred (Table schema rs) =
   Table schema [ r | r <- rs, pred r ]
 
-renameT :: Schema -> Schema -> Table -> Table
+renameT :: [ColName] -> [ColName] -> Table -> Table
 renameT inp out (Table _sc rs) =
-  Table out [ renameR inp out r | r <- rs ]
+  Table (mkSchema out) [ renameR inp out r | r <- rs ]
 
-groupBy :: Schema -> ColName -> Table -> Table
+groupBy :: [ColName] -> ColName -> Table -> Table
 groupBy cols tag (Table _sc rs) = do
   let m1 :: Map [Value] [Record] =
         Map.fromListWith (++)
@@ -604,17 +605,17 @@ expandAgg aggCol (Table _sc1 rs1) = do
 
 countAgg :: ColName -> ColName -> Table -> Table
 countAgg aggCol countCol (Table sc1 rs1) = do
-  Table (sc1 ++ [countCol]) $
+  Table (combineSchema sc1 (mkSchema [countCol])) $
     [ combineR r1 rCount
     | r1 <- rs1
     , let VAgg (Table _sc2 rs2) = selectR r1 aggCol
     , let rCount = mkRecord [countCol] [ VInt (length rs2) ]
     ]
 
-mkTable :: Schema -> [[Value]] -> Table
-mkTable schema vss = do
-  let n = length schema
-  Table schema [ mkRecord schema (checkLength n vs) | vs <- vss ]
+mkTable :: [ColName] -> [[Value]] -> Table
+mkTable cols vss = do
+  let n = length cols
+  Table (mkSchema cols) [ mkRecord cols (checkLength n vs) | vs <- vss ]
 
 checkLength :: Show a => Int -> [a] -> [a]
 checkLength n xs =
@@ -628,7 +629,7 @@ prefixR :: String -> Record -> Record
 prefixR tag (Record m) =
   Record (Map.mapKeys (\k -> tag++"."++k) m)
 
-renameR :: Schema -> Schema -> Record -> Record
+renameR :: [ColName] -> [ColName] -> Record -> Record
 renameR inp out r =
   mkRecord out (map (selectR r) inp)
 
@@ -650,11 +651,8 @@ data Table = Table Schema [Record]
 data Record = Record (Map ColName Value)
   deriving (Eq,Ord,Show)
 
-mkRecord :: Schema -> [Value] -> Record
+mkRecord :: [ColName] -> [Value] -> Record
 mkRecord cs vs = Record (Map.fromList (zip cs vs))
-
-type Schema = [ColName]
-type ColName = String
 
 data Value = VString String | VInt Int | VAgg Table
   deriving (Eq,Ord)
@@ -673,14 +671,32 @@ instance Show Value where
 
 prettyT :: Table -> String
 prettyT (Table sc rs) =
-  intercalate "," sc ++ "\n"
+  intercalate "," (unSchema sc) ++ "\n"
   ++ case rs of
        [] -> "*empty table*"
        rs -> unlines [ prettyR sc r | r <- rs ]
 
 prettyR :: Schema -> Record -> String
-prettyR cols r =
-  intercalate "," [ show (selectR r c) | c <- cols ]
+prettyR sc r =
+  intercalate "," [ show (selectR r c) | c <- unSchema sc ]
+
+----------------------------------------------------------------------
+-- schema
+
+data Schema = Schema [ColName] deriving (Eq,Ord)
+type ColName = String
+
+unSchema :: Schema -> [ColName]
+unSchema (Schema xs) = xs
+
+mkSchema :: [ColName] -> Schema
+mkSchema = Schema
+
+combineSchema :: Schema -> Schema -> Schema
+combineSchema (Schema cs1) (Schema cs2) = Schema (cs1 ++ cs2)
+
+instance Show Schema where
+  show (Schema cs) = intercalate "," cs
 
 ----------------------------------------------------------------------
 -- parsing tables from CVS
