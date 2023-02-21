@@ -60,7 +60,14 @@ parseArgs = loop Config { mode = CompilePrintAndRun
 
 examples :: Map String Query
 examples = Map.fromList
-  [ ("johns",
+  [ ("everything",
+      ScanFile mps "data/mps.csv")
+
+  , ("everythingAboutJohns",
+      (Filter (PredEq (RefValue (VString "John")) (RefField "Forename"))
+       (ScanFile mps "data/mps.csv")))
+
+  , ("johns",
       project ["Forename","Surname","Party"]
       (Filter (PredEq (RefValue (VString "John")) (RefField "Forename"))
        (ScanFile mps "data/mps.csv")))
@@ -382,7 +389,7 @@ runActionI a = run rs0 a $ \RunState{} -> I_Done
 
       A_Emit r ->
         -- TODO: need to know the schema here!
-        I_Print (prettyR (error "help!") (evalR rm r)) (k s)
+        I_Print (prettyR undefined (evalR rm r)) (k s)
 
       A_If p bodyA -> do
         if (evalB rm p) then run s bodyA k else k s
@@ -407,7 +414,7 @@ runActionI a = run rs0 a $ \RunState{} -> I_Done
             [] -> k s
             (key,bucket):rs -> do
               let rv = mkRecord (cols ++ [tag])
-                                (key ++ [VAgg (Table undefined bucket) ])
+                                (key ++ [VAgg (Table undefined bucket) ]) -- TODO
               run s { rm = Map.insert rid rv rm } bodyA $ \s ->
                 inner s rs
         let h = maybe err id $ Map.lookup hid hm
@@ -547,18 +554,18 @@ getIntV = \case
 -- table operations
 
 crossProductT :: Table -> Table -> Table
-crossProductT (Table _sc1 rs1) (Table _sc2 rs2) =
-  Table undefined [ combineR r1 r2 | r1 <- rs1, r2 <- rs2 ]
+crossProductT (Table sc1 rs1) (Table sc2 rs2) =
+  Table (sc1++sc2) [ combineR r1 r2 | r1 <- rs1, r2 <- rs2 ]
 
 hashJoinTables :: Schema -> Schema -> Table -> Table -> Table
-hashJoinTables cols1 cols2 (Table _sc1 rs1) (Table _sc2 rs2) = do
+hashJoinTables cols1 cols2 (Table sc1 rs1) (Table sc2 rs2) = do
   let m1 :: Map [Value] [Record] =
         Map.fromListWith (++)
         [ (key, [r1])
         | r1 <- rs1
         , let key = map (selectR r1) cols1
         ]
-  Table undefined $
+  Table (sc1++sc2) $
     [ combineR r1 r2
     | r2 <- rs2
     , let key = map (selectR r2) cols2
@@ -566,8 +573,8 @@ hashJoinTables cols1 cols2 (Table _sc1 rs1) (Table _sc2 rs2) = do
     ]
 
 filterT :: (Record -> Bool) -> Table -> Table
-filterT pred (Table _sc rs) =
-  Table undefined [ r | r <- rs, pred r ]
+filterT pred (Table schema rs) =
+  Table schema [ r | r <- rs, pred r ]
 
 renameT :: Schema -> Schema -> Table -> Table
 renameT inp out (Table _sc rs) =
@@ -575,18 +582,18 @@ renameT inp out (Table _sc rs) =
 
 groupBy :: Schema -> ColName -> Table -> Table
 groupBy cols tag (Table _sc rs) = do
-  let _m1 :: Map [Value] [Record] =
+  let m1 :: Map [Value] [Record] =
         Map.fromListWith (++)
         [ (key, [r])
         | r <- rs
         , let key = map (selectR r) cols
         ]
   mkTable (cols ++ [tag])
-    [ k ++ [VAgg (Table undefined rs)] | (k,rs) <- Map.toList _m1 ]
+    [ k ++ [VAgg (Table undefined rs)] | (k,rs) <- Map.toList m1 ]
 
 expandAgg :: ColName -> Table -> Table
 expandAgg aggCol (Table _sc1 rs1) = do
-  Table undefined $
+  Table undefined $ -- TODO: need static/structured schema to know this
     [ combineR r1 (prefixR aggCol r2)
     | r1 <- rs1
     , let VAgg (Table _sc2 rs2) = selectR r1 aggCol
@@ -594,8 +601,8 @@ expandAgg aggCol (Table _sc1 rs1) = do
     ]
 
 countAgg :: ColName -> ColName -> Table -> Table
-countAgg aggCol countCol (Table _sc1 rs1) = do
-  Table undefined $
+countAgg aggCol countCol (Table sc1 rs1) = do
+  Table (sc1 ++ [countCol]) $
     [ combineR r1 rCount
     | r1 <- rs1
     , let VAgg (Table _sc2 rs2) = selectR r1 aggCol
@@ -605,8 +612,7 @@ countAgg aggCol countCol (Table _sc1 rs1) = do
 mkTable :: Schema -> [[Value]] -> Table
 mkTable schema vss = do
   let n = length schema
-  Table undefined [ mkRecord schema (checkLength n vs)
-           | vs <- vss ]
+  Table schema [ mkRecord schema (checkLength n vs) | vs <- vss ]
 
 checkLength :: Show a => Int -> [a] -> [a]
 checkLength n xs =
@@ -636,9 +642,6 @@ combineR (Record m1) (Record m2) =
 ----------------------------------------------------------------------
 -- values
 
--- TODO: many places in code construct Table with undefined schema
--- make these provoke errors and fix
--- Think this is only an interpreter issue
 data Table = Table Schema [Record]
   deriving (Eq,Ord)
 

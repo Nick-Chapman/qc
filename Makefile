@@ -1,5 +1,5 @@
 
-examples = johns sameSurname johnsByParty partyMemberCount commonName commonNameAcrossParties
+examples = everything everythingAboutJohns johns sameSurname johnsByParty partyMemberCount commonName commonNameAcrossParties
 # sameSurnameH -- hash join example disabled
 
 compileOutputs = $(patsubst %,_out/%.code,$(examples))

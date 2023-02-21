@@ -1,0 +1,4 @@
+scan("data/mps.csv") { r1 =>
+  emit: r1
+}
+

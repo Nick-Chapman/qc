@@ -1,0 +1,6 @@
+scan("data/mps.csv") { r1 =>
+  if("John" == select(r1,"Forename")) {
+    emit: r1
+  }
+}
+
