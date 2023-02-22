@@ -139,10 +139,10 @@ examples = Map.fromList
            (projectPrefix "S" ["Forename","Surname","Party"] (ScanFile mps "data/mps.csv")))))))
 
   , ("dev", -- based on johnsByParty, with final project removed
-      --project ["Party","G.Surname"]
+      ProjectAs ["P","G.E"] ["party","email"]
       (ExpandAgg "G"
-       (GroupBy ["Party"] "G"
-        (project ["Forename","Surname","Party"]
+       (GroupBy ["P"] "G"
+        (ProjectAs ["Email","Forename","Surname","Party"] ["E","F","S","P"]
          (Filter (PredEq (RefValue (VString "John")) (RefField "Forename"))
           (ScanFile mps "data/mps.csv"))))))
 
@@ -189,7 +189,7 @@ schemaOfQuery = sofq
   where
     sofq :: Query -> Schema
     sofq = \case
-      ScanFile sc _ -> mkSchema sc
+      ScanFile cols _ -> mkSchema cols
       ProjectAs _ out _ -> mkSchema out
       Filter _ sub -> sofq sub
       Join subs1 subs2 ->
@@ -212,12 +212,15 @@ compile q = compile s0 q $ \CompState{} r -> A_Emit schema r
 
     compile :: CompState -> Query -> (CompState -> RExp -> Action) -> Action
     compile s q k = case q of
-      ScanFile _ filename -> do
-        genRid s $ \s rid ->
-          A_ScanFile filename rid (k s (RefR rid))
+      ScanFile cols0 filename -> do
+        let cols = cols0 -- TODO: minimize!
+        genRid s $ \s rid -> do
+          A_ScanFile filename rid $ do
+            splitRecord cols s (RefR rid) $ \s r -> do
+              k s r
 
       ProjectAs inp out sub -> do
-        compile s sub $ \s r -> k s (RenameR inp out r)
+        compile s sub $ \s r -> k s (renameRecord inp out r)
 
       Filter pred sub -> do
         compile s sub $ \s r -> A_If (compilePred r pred) (k s r)
@@ -249,6 +252,24 @@ compile q = compile s0 q $ \CompState{} r -> A_Emit schema r
             A_CountAgg r aggCol countCol rid (k s (RefR rid))
 
 
+splitRecord :: [ColName] -> CompState -> RExp -> (CompState -> RExp -> Action) -> Action
+splitRecord _ s r k = k s r -- DUMMY
+
+_splitRecord :: [ColName] -> CompState -> RExp -> (CompState -> RExp -> Action) -> Action
+_splitRecord cols s r k = loop s [] cols
+  where
+    loop :: CompState -> [(ColName,VExp)] -> [ColName] -> Action
+    loop s acc = \case
+      [] -> k s (ColWise (Map.fromList acc))
+      col:cols -> do
+        genVid s $ \s vid -> do
+          A_LetVid vid (VSelect r col) $
+            loop s ((col,VRef vid):acc) cols
+
+genVid :: CompState -> (CompState -> VId -> Action) -> Action
+genVid s@CompState{u} k = do
+  k s { u = u + 1 } (VId u)
+
 genRid :: CompState -> (CompState -> RId -> Action) -> Action
 genRid s@CompState{u} k = do
   k s { u = u + 1 } (RId u)
@@ -272,6 +293,13 @@ compileRef r = \case
   RefValue v -> VLit v
   RefField c -> VSelect r c
 
+
+
+renameRecord :: [ColName] -> [ColName] -> RExp -> RExp
+renameRecord inp out = \case
+  --ColWise m -> undefined m -- TODO here
+  re -> RenameR inp out re
+
 ----------------------------------------------------------------------
 -- Result of compilation: Action and {B,V,R)Exp
 
@@ -284,6 +312,7 @@ data Action
   | A_ScanHT HId [ColName] ColName RId Action
   | A_ExpandAgg RExp ColName RId Action
   | A_CountAgg RExp ColName ColName RId Action
+  | A_LetVid VId VExp Action
 
 data BExp
   = BAnd BExp BExp
@@ -294,11 +323,13 @@ data BExp
 data VExp
   = VLit Value
   | VSelect RExp ColName
+  | VRef VId
 
 data RExp
   = CombineR RExp RExp
   | RenameR [ColName] [ColName] RExp
   | RefR RId
+  | ColWise (Map ColName VExp) -- TODO: better name
 
 data RId
   = RId Int
@@ -306,6 +337,10 @@ data RId
 
 data HId
   = HId Int
+  deriving (Eq,Ord)
+
+data VId
+  = VId Int
   deriving (Eq,Ord)
 
 ----------------------------------------------------------------------
@@ -350,6 +385,11 @@ ppAction = \case
     , indent (ppAction bodyA)
     , [ "}"]
     ]
+  A_LetVid vid vexp action -> concat
+    [ [ "let " ++ show vid ++ " = " ++ show vexp ]
+    , ppAction action
+    ]
+
   where
     indent :: [String] -> [String]
     indent xs = [ "  " ++ x | x <- xs ]
@@ -365,12 +405,17 @@ instance Show VExp where
   show = \case
     VLit v -> show v
     VSelect r c -> "select" ++ show (r,c)
+    VRef vid -> show vid
 
 instance Show RExp where
   show = \case
     CombineR r1 r2 -> "combine" ++ show (r1,r2)
     RenameR inp out r -> "rename" ++ show (inp,out,r)
     RefR rid -> show rid
+    ColWise m -> "colwise:" ++ show (Map.toList m)
+
+instance Show VId where
+  show (VId n) = "v" ++ show n
 
 instance Show RId where
   show (RId n) = "r" ++ show n
@@ -384,10 +429,10 @@ instance Show HId where
 runActionI :: Action -> Interaction
 runActionI a = run rs0 a $ \RunState{} -> I_Done
   where
-    rs0 = RunState { rm = Map.empty, hm = Map.empty }
+    rs0 = RunState { vm = Map.empty, rm = Map.empty, hm = Map.empty }
 
     run :: RunState -> Action -> (RunState -> Interaction) -> Interaction
-    run s@RunState{rm,hm} a k = case a of
+    run s@RunState{vm,rm,hm} a k = case a of
 
       A_ScanFile filename rid bodyA -> do
         I_LoadTable filename $ \(Table _sc rs) -> do
@@ -402,10 +447,10 @@ runActionI a = run rs0 a $ \RunState{} -> I_Done
 
       A_Emit schema r ->
         -- TODO: need to know the schema here!
-        I_Print (prettyR schema (evalR rm r)) (k s)
+        I_Print (prettyR schema (evalR s r)) (k s)
 
       A_If p bodyA -> do
-        if (evalB rm p) then run s bodyA k else k s
+        if (evalB s p) then run s bodyA k else k s
 
       A_NewHT hid aBuild aScan  -> do
         run s { hm = Map.insert hid Map.empty hm } aBuild $ \s -> do
@@ -415,7 +460,7 @@ runActionI a = run rs0 a $ \RunState{} -> I_Done
       A_InsertHT hid cols r -> do
         let h :: HT = maybe err id $ Map.lookup hid hm
               where err = error (show ("no HT for insert",hid))
-        let rv :: Record = evalR rm r
+        let rv :: Record = evalR s r
         let key :: [Value] = map (selectR rv) cols
         let h' :: HT = Map.insertWith (++) key [rv] h
         k s { hm = Map.insert hid h' hm }
@@ -435,7 +480,7 @@ runActionI a = run rs0 a $ \RunState{} -> I_Done
         inner s (Map.toList h)
 
       A_ExpandAgg r col rid bodyA -> do
-        let rv1 :: Record = evalR rm r
+        let rv1 :: Record = evalR s r
         let
           inner :: RunState -> [Record] -> Interaction
           inner s = \case
@@ -448,42 +493,53 @@ runActionI a = run rs0 a $ \RunState{} -> I_Done
         inner s rs
 
       A_CountAgg r aggCol countCol rid bodyA -> do
-        let rv1 :: Record = evalR rm r
+        let rv1 :: Record = evalR s r
         let VAgg (Table _sc rs) = selectR rv1 aggCol
         let rv2 = mkRecord [countCol] [ VInt (length rs) ]
         let rv = combineR rv1 rv2
         run s { rm = Map.insert rid rv rm } bodyA $ \s ->
           k s
 
+      A_LetVid vid vexp action -> do
+        let v = evalV s vexp
+        run s { vm = Map.insert vid v vm } action $ \s -> -- TODO: extend
+          k s
+
 
 type HT = Map [Value] [Record]
 
-data RunState = RunState { rm :: RMap, hm :: HMap }
+data RunState = RunState { vm :: VMap, rm :: RMap, hm :: HMap }
 
+type VMap = Map VId Value
 type RMap = Map RId Record
 type HMap = Map HId HT
 
-evalB :: RMap -> BExp -> Bool
-evalB rm = \case
-  BAnd b1 b2 -> evalB rm b1 && evalB rm b2
-  BEq v1 v2 -> evalV rm v1 == evalV rm v2
-  BNe v1 v2 -> evalV rm v1 /= evalV rm v2
-  BGt v1 v2 -> greaterThanV (evalV rm v1) (evalV rm v2)
+evalB :: RunState -> BExp -> Bool
+evalB s = \case
+  BAnd b1 b2 -> evalB s b1 && evalB s b2
+  BEq v1 v2 -> evalV s v1 == evalV s v2
+  BNe v1 v2 -> evalV s v1 /= evalV s v2
+  BGt v1 v2 -> greaterThanV (evalV s v1) (evalV s v2)
 
-evalV :: RMap -> VExp -> Value
-evalV rm = \case
+evalV :: RunState -> VExp -> Value
+evalV s@RunState{vm} = \case
   VLit v -> v
-  VSelect r c -> selectR (evalR rm r) c
+  VSelect r c -> selectR (evalR s r) c
+  VRef vid ->
+    maybe err id $ Map.lookup vid vm
+      where err = error (show ("evalV/VRef",vid))
 
-evalR :: RMap -> RExp -> Record
-evalR rm = \case
+evalR :: RunState -> RExp -> Record
+evalR s@RunState{rm} = \case
   CombineR r1 r2 -> do
-    combineR (evalR rm r1) (evalR rm r2)
+    combineR (evalR s r1) (evalR s r2)
   RenameR inp out r -> do
-    renameR inp out (evalR rm r)
+    renameR inp out (evalR s r)
   RefR rid -> do
     maybe err id $ Map.lookup rid rm
       where err = error (show ("evalR/RefR",rid))
+  ColWise m ->
+    Record $ Map.fromList [ (c, evalV s ve) | (c,ve) <- Map.toList m ]
 
 ----------------------------------------------------------------------
 -- Interaction (instead of IO)
