@@ -1,7 +1,27 @@
 scan("data/mps.csv") { r1 =>
-  scan("data/mps.csv") { r2 =>
-    if(select(combine(rename(["Forename","Surname","Party"],["R.Forename","R.Surname","R.Party"],r1),rename(["Forename","Surname","Party"],["S.Forename","S.Surname","S.Party"],r2)),"R.Surname") == select(combine(rename(["Forename","Surname","Party"],["R.Forename","R.Surname","R.Party"],r1),rename(["Forename","Surname","Party"],["S.Forename","S.Surname","S.Party"],r2)),"S.Surname") && select(combine(rename(["Forename","Surname","Party"],["R.Forename","R.Surname","R.Party"],r1),rename(["Forename","Surname","Party"],["S.Forename","S.Surname","S.Party"],r2)),"R.Forename") /= select(combine(rename(["Forename","Surname","Party"],["R.Forename","R.Surname","R.Party"],r1),rename(["Forename","Surname","Party"],["S.Forename","S.Surname","S.Party"],r2)),"S.Forename")) {
-      emit: rename(["R.Surname","R.Forename","S.Forename","R.Party","S.Party"],["R.Surname","R.Forename","S.Forename","R.Party","S.Party"],combine(rename(["Forename","Surname","Party"],["R.Forename","R.Surname","R.Party"],r1),rename(["Forename","Surname","Party"],["S.Forename","S.Surname","S.Party"],r2)))
+  let v2 = select(r1,"Forename")
+  let v3 = select(r1,"Surname")
+  let v4 = select(r1,"Name (Display as)")
+  let v5 = select(r1,"Name (List as)")
+  let v6 = select(r1,"Party")
+  let v7 = select(r1,"Constituency")
+  let v8 = select(r1,"Email")
+  let v9 = select(r1,"Address 1")
+  let v10 = select(r1,"Address 2")
+  let v11 = select(r1,"Postcode")
+  scan("data/mps.csv") { r12 =>
+    let v13 = select(r12,"Forename")
+    let v14 = select(r12,"Surname")
+    let v15 = select(r12,"Name (Display as)")
+    let v16 = select(r12,"Name (List as)")
+    let v17 = select(r12,"Party")
+    let v18 = select(r12,"Constituency")
+    let v19 = select(r12,"Email")
+    let v20 = select(r12,"Address 1")
+    let v21 = select(r12,"Address 2")
+    let v22 = select(r12,"Postcode")
+    if(v3 == v14 && v2 /= v13) {
+      emit: colwise:[("R.Forename",v2),("R.Party",v6),("R.Surname",v3),("S.Forename",v13),("S.Party",v17)]
     }
   }
 }

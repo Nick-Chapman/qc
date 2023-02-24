@@ -1,6 +1,16 @@
 scan("data/mps.csv") { r1 =>
-  if("John" == select(r1,"Forename")) {
-    emit: r1
+  let v2 = select(r1,"Forename")
+  let v3 = select(r1,"Surname")
+  let v4 = select(r1,"Name (Display as)")
+  let v5 = select(r1,"Name (List as)")
+  let v6 = select(r1,"Party")
+  let v7 = select(r1,"Constituency")
+  let v8 = select(r1,"Email")
+  let v9 = select(r1,"Address 1")
+  let v10 = select(r1,"Address 2")
+  let v11 = select(r1,"Postcode")
+  if("John" == v2) {
+    emit: colwise:[("Address 1",v9),("Address 2",v10),("Constituency",v7),("Email",v8),("Forename",v2),("Name (Display as)",v4),("Name (List as)",v5),("Party",v6),("Postcode",v11),("Surname",v3)]
   }
 }
 

@@ -1,12 +1,22 @@
 let h1 = newHT()
 scan("data/mps.csv") { r2 =>
-  if("John" == select(r2,"Forename")) {
-    insertHT: (h1,["Party"],rename(["Forename","Surname","Party"],["Forename","Surname","Party"],r2))
+  let v3 = select(r2,"Forename")
+  let v4 = select(r2,"Surname")
+  let v5 = select(r2,"Name (Display as)")
+  let v6 = select(r2,"Name (List as)")
+  let v7 = select(r2,"Party")
+  let v8 = select(r2,"Constituency")
+  let v9 = select(r2,"Email")
+  let v10 = select(r2,"Address 1")
+  let v11 = select(r2,"Address 2")
+  let v12 = select(r2,"Postcode")
+  if("John" == v3) {
+    insertHT: (h1,["Party"],colwise:[("Forename",v3),("Party",v7),("Surname",v4)])
   }
 }
 scanHT(h1,["Party"],"G") { r2 =>
   ExpandAgg(r2,"G") { r3 =>
-    emit: rename(["Party","G.Surname"],["Party","G.Surname"],r3)
+    emit: colwise:[("G.Surname",select(r3,"G.Surname")),("Party",select(r3,"Party"))]
   }
 }
 

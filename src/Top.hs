@@ -228,7 +228,7 @@ compile q = compile s0 q $ \CompState{} r -> A_Emit schema r
       Join sub1 sub2 -> do
         compile s sub1 $ \s r1 -> do
           compile s sub2 $ \s r2 -> do
-            k s (CombineR r1 r2)
+            k s (mkCombineR (r1,r2))
 
       HashJoin{} -> undefined -- cols1 cols2 sub1 sub2 -> do
 
@@ -252,11 +252,11 @@ compile q = compile s0 q $ \CompState{} r -> A_Emit schema r
             A_CountAgg r aggCol countCol rid (k s (RefR rid))
 
 
-splitRecord :: [ColName] -> CompState -> RExp -> (CompState -> RExp -> Action) -> Action
-splitRecord _ s r k = k s r -- DUMMY
+--_splitRecord :: [ColName] -> CompState -> RExp -> (CompState -> RExp -> Action) -> Action
+--_splitRecord _ s r k = k s r
 
-_splitRecord :: [ColName] -> CompState -> RExp -> (CompState -> RExp -> Action) -> Action
-_splitRecord cols s r k = loop s [] cols
+splitRecord :: [ColName] -> CompState -> RExp -> (CompState -> RExp -> Action) -> Action
+splitRecord cols s r k = loop s [] cols
   where
     loop :: CompState -> [(ColName,VExp)] -> [ColName] -> Action
     loop s acc = \case
@@ -291,14 +291,29 @@ compilePred r = \case
 compileRef :: RExp -> Ref -> VExp
 compileRef r = \case
   RefValue v -> VLit v
-  RefField c -> VSelect r c
+  RefField c -> selectRecord c r
 
 
+mkCombineR :: (RExp,RExp) -> RExp
+mkCombineR = \case
+  (ColWise m1, ColWise m2) -> ColWise (Map.union m1 m2)
+  (re1,re2) -> CombineR re1 re2
 
 renameRecord :: [ColName] -> [ColName] -> RExp -> RExp
-renameRecord inp out = \case
-  --ColWise m -> undefined m -- TODO here
-  re -> RenameR inp out re
+renameRecord inp out re = do
+  ColWise $ Map.fromList
+    [ (oc,v)
+    | (ic,oc) <- zip inp out
+    , let v = selectRecord ic re
+    ]
+
+selectRecord :: ColName -> RExp -> VExp
+selectRecord col = \case
+  ColWise m ->
+    maybe (error "selectRecord") id $ Map.lookup col m
+  re ->
+    VSelect re col
+
 
 ----------------------------------------------------------------------
 -- Result of compilation: Action and {B,V,R)Exp
@@ -327,9 +342,9 @@ data VExp
 
 data RExp
   = CombineR RExp RExp
-  | RenameR [ColName] [ColName] RExp
+--  | RenameR [ColName] [ColName] RExp
   | RefR RId
-  | ColWise (Map ColName VExp) -- TODO: better name
+  | ColWise (Map ColName VExp) -- TODO: pick better name?
 
 data RId
   = RId Int
@@ -410,7 +425,7 @@ instance Show VExp where
 instance Show RExp where
   show = \case
     CombineR r1 r2 -> "combine" ++ show (r1,r2)
-    RenameR inp out r -> "rename" ++ show (inp,out,r)
+    --RenameR inp out r -> "rename" ++ show (inp,out,r)
     RefR rid -> show rid
     ColWise m -> "colwise:" ++ show (Map.toList m)
 
@@ -502,7 +517,7 @@ runActionI a = run rs0 a $ \RunState{} -> I_Done
 
       A_LetVid vid vexp action -> do
         let v = evalV s vexp
-        run s { vm = Map.insert vid v vm } action $ \s -> -- TODO: extend
+        run s { vm = Map.insert vid v vm } action $ \s ->
           k s
 
 
@@ -533,8 +548,8 @@ evalR :: RunState -> RExp -> Record
 evalR s@RunState{rm} = \case
   CombineR r1 r2 -> do
     combineR (evalR s r1) (evalR s r2)
-  RenameR inp out r -> do
-    renameR inp out (evalR s r)
+  {-RenameR inp out r -> do
+    renameR inp out (evalR s r)-}
   RefR rid -> do
     maybe err id $ Map.lookup rid rm
       where err = error (show ("evalR/RefR",rid))

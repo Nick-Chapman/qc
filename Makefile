@@ -1,11 +1,13 @@
 
+top: gen diff
+
 examples = everything everythingAboutJohns johns sameSurname johnsByParty partyMemberCount commonName commonNameAcrossParties
 # sameSurnameH -- hash join example disabled
 
 compileOutputs = $(patsubst %,_out/%.code,$(examples))
 cvsOutputs = $(patsubst %,_out/%.csv,$(examples))
 
-top: $(compileOutputs) $(cvsOutputs) diff
+gen: $(compileOutputs) $(cvsOutputs)
 
 diff:
 	git diff _out
