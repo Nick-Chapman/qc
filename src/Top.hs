@@ -204,30 +204,33 @@ schemaOfQuery = sofq
         combineSchema (sofq sub) (mkSchema [countCol])
 
 compile :: Query -> Action
-compile q = compile s0 q $ \CompState{} r -> A_Emit schema r
+compile q = compile need0 s0 q $ \CompState{} r -> A_Emit schema r
   where
     schema = schemaOfQuery q
+    need0 :: [ColName] = unSchema schema
 
     s0 = CompState { u = 1 }
 
-    compile :: CompState -> Query -> (CompState -> RExp -> Action) -> Action
-    compile s q k = case q of
+    compile :: [ColName] -> CompState -> Query -> (CompState -> RExp -> Action) -> Action
+    compile need s q k = case q of
       ScanFile cols0 filename -> do
-        let cols = cols0 -- TODO: minimize!
+        let cols = [ c | c <- cols0, c `elem` need ]
         genRid s $ \s rid -> do
           A_ScanFile filename rid $ do
             splitRecord cols s (RefR rid) $ \s r -> do
               k s r
 
       ProjectAs inp out sub -> do
-        compile s sub $ \s r -> k s (renameRecord inp out r)
+        compile inp s sub $ \s r -> do -- need changes here
+          k s (renameRecord inp out r)
 
       Filter pred sub -> do
-        compile s sub $ \s r -> A_If (compilePred r pred) (k s r)
+        compile (need ++ colsOfPred pred) s sub $ \s r -> do
+          A_If (compilePred r pred) (k s r)
 
       Join sub1 sub2 -> do
-        compile s sub1 $ \s r1 -> do
-          compile s sub2 $ \s r2 -> do
+        compile need s sub1 $ \s r1 -> do
+          compile need s sub2 $ \s r2 -> do
             k s (mkCombineR (r1,r2))
 
       HashJoin{} -> undefined -- cols1 cols2 sub1 sub2 -> do
@@ -235,25 +238,38 @@ compile q = compile s0 q $ \CompState{} r -> A_Emit schema r
       GroupBy cols tag sub -> do
         genHid s $ \s hid -> do
           A_NewHT hid
-            (compile s sub $ \_ r -> do
+            (compile (need ++ cols) s sub $ \_ r -> do
                 A_InsertHT hid cols r)
             (genRid s $ \s rid -> do
                 (A_ScanHT hid cols tag rid
                  (k s (RefR rid))))
 
       ExpandAgg aggCol sub -> do
-        compile s sub $ \s r -> do
+        compile need s sub $ \s r -> do
           genRid s $ \s rid -> do
             A_ExpandAgg r aggCol rid (k s (RefR rid))
 
       CountAgg aggCol countCol sub -> do
-        compile s sub $ \s r -> do
+        compile need s sub $ \s r -> do
           genRid s $ \s rid -> do
             A_CountAgg r aggCol countCol rid (k s (RefR rid))
 
 
 --_splitRecord :: [ColName] -> CompState -> RExp -> (CompState -> RExp -> Action) -> Action
 --_splitRecord _ s r k = k s r
+
+colsOfPred :: Pred -> [ColName]
+colsOfPred = \case
+  PredAnd p1 p2 -> colsOfPred p1 ++ colsOfPred p2
+  PredEq x1 x2 -> colsOfRef x1 ++ colsOfRef x2
+  PredNe x1 x2 -> colsOfRef x1 ++ colsOfRef x2
+  PredGt x1 x2 -> colsOfRef x1 ++ colsOfRef x2
+
+colsOfRef :: Ref -> [ColName]
+colsOfRef = \case
+  RefValue _ -> []
+  RefField c -> [c]
+
 
 splitRecord :: [ColName] -> CompState -> RExp -> (CompState -> RExp -> Action) -> Action
 splitRecord cols s r k = loop s [] cols
@@ -310,7 +326,7 @@ renameRecord inp out re = do
 selectRecord :: ColName -> RExp -> VExp
 selectRecord col = \case
   ColWise m ->
-    maybe (error "selectRecord") id $ Map.lookup col m
+    maybe (error (show ("selectRecord",col))) id $ Map.lookup col m
   re ->
     VSelect re col
 

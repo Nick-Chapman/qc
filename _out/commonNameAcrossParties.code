@@ -2,16 +2,8 @@ let h1 = newHT()
 let h2 = newHT()
 scan("data/mps.csv") { r3 =>
   let v4 = select(r3,"Forename")
-  let v5 = select(r3,"Surname")
-  let v6 = select(r3,"Name (Display as)")
-  let v7 = select(r3,"Name (List as)")
-  let v8 = select(r3,"Party")
-  let v9 = select(r3,"Constituency")
-  let v10 = select(r3,"Email")
-  let v11 = select(r3,"Address 1")
-  let v12 = select(r3,"Address 2")
-  let v13 = select(r3,"Postcode")
-  insertHT: (h2,["Forename","Party"],colwise:[("Address 1",v11),("Address 2",v12),("Constituency",v9),("Email",v10),("Forename",v4),("Name (Display as)",v6),("Name (List as)",v7),("Party",v8),("Postcode",v13),("Surname",v5)])
+  let v5 = select(r3,"Party")
+  insertHT: (h2,["Forename","Party"],colwise:[("Forename",v4),("Party",v5)])
 }
 scanHT(h2,["Forename","Party"],"FP") { r3 =>
   CountAgg(r3,"FP","#ForenameByParty") { r4 =>
