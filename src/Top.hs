@@ -520,12 +520,12 @@ runActionI a = run rs0 a $ \RunState{} -> I_Done
               let rv = combineR rv1 (prefixR col rv2)
               run s { rm = Map.insert rid rv rm } bodyA $ \s ->
                 inner s rs
-        let VAgg (Table _sc rs) = selectR rv1 col
+        let Table _sc rs = expectAgg (selectR rv1 col)
         inner s rs
 
       A_CountAgg r aggCol countCol rid bodyA -> do
         let rv1 :: Record = evalR s r
-        let VAgg (Table _sc rs) = selectR rv1 aggCol
+        let Table _sc rs = expectAgg (selectR rv1 aggCol)
         let rv2 = mkRecord [countCol] [ VInt (length rs) ]
         let rv = combineR rv1 rv2
         run s { rm = Map.insert rid rv rm } bodyA $ \s ->
@@ -696,7 +696,7 @@ expandAgg aggCol (Table sc1 rs1) = do
   Table (expandAggSchema aggCol sc1) $
     [ combineR r1 (prefixR aggCol r2)
     | r1 <- rs1
-    , let VAgg (Table _sc2 rs2) = selectR r1 aggCol
+    , let Table _sc2 rs2 = expectAgg (selectR r1 aggCol)
     , r2 <- rs2
     ]
 
@@ -705,7 +705,7 @@ countAgg aggCol countCol (Table sc1 rs1) = do
   Table (combineSchema sc1 (mkSchema [countCol])) $
     [ combineR r1 rCount
     | r1 <- rs1
-    , let VAgg (Table _sc2 rs2) = selectR r1 aggCol
+    , let Table _sc2 rs2 = expectAgg (selectR r1 aggCol)
     , let rCount = mkRecord [countCol] [ VInt (length rs2) ]
     ]
 
@@ -754,6 +754,11 @@ mkRecord cs vs = Record (Map.fromList (zip cs vs))
 
 data Value = VString String | VInt Int | VAgg Table
   deriving (Eq,Ord)
+
+expectAgg :: Value -> Table
+expectAgg = \case
+  VAgg table -> table
+  _ -> error "expectAgg"
 
 ----------------------------------------------------------------------
 -- displaying  values
