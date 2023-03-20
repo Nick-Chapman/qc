@@ -4,7 +4,7 @@ description:         Explore query compilation via staged interpretation.
 license:             BSD3
 author:              Nick Chapman
 maintainer:          nic@amadido.co.uk
-github:              https://github.com/Nick-Chapman/qc.git
+github:              Nick-Chapman/qc.git
 
 extra-source-files:
 - README.md
